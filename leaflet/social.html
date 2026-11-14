@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="si">
+<head>
+<meta charset="utf-8">
+<title>HireMeter Social Post</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Sinhala:wght@400;600;800&family=Noto+Sans+Tamil:wght@400;600&family=Archivo:wght@500;700;900&family=JetBrains+Mono:wght@700&display=swap">
+<style>
+/* Layout: a phone-sized poster. Meter display on top, features in three languages, then "tap the link" install steps.
+   .fb = Facebook post 1080x1350, .tt = TikTok / Reels 1080x1920 (text kept clear of TikTok's side buttons and caption area). */
+:root {
+  --green: #0B6E4F;
+  --green-deep: #06442F;
+  --amber: #FFC21A;
+  --paper: #FFFFFF;
+  --ink: #14211B;
+  --muted: #55665E;
+  --soft: #E6F2EC;
+  --si: "Noto Sans Sinhala", "Nirmala UI", sans-serif;
+  --ta: "Noto Sans Tamil", "Nirmala UI", sans-serif;
+  --en: "Archivo", "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", "Consolas", monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); }
+.poster { width: 1080px; overflow: hidden; display: flex; flex-direction: column; background: var(--paper); }
+.fb .poster { height: 1350px; }
+.tt .poster { height: 1920px; }
+
+.top { background: var(--green-deep); color: #fff; padding: 48px 64px 40px; display: grid; grid-template-columns: 1fr auto; gap: 32px; align-items: center; }
+.tt .top { padding: 150px 150px 70px 72px; grid-template-columns: 1fr; }
+.brand { font-family: var(--en); font-weight: 900; font-size: 96px; letter-spacing: -2px; line-height: 1; }
+.brand span { color: var(--amber); }
+.tag { margin-top: 22px; display: grid; gap: 8px; }
+.tag .si { font-family: var(--si); font-weight: 800; font-size: 50px; line-height: 1.25; }
+.tag .ta { font-family: var(--ta); font-weight: 600; font-size: 32px; opacity: .92; }
+.tag .en { font-family: var(--en); font-weight: 500; font-size: 30px; opacity: .8; }
+.meter { background: #021A12; border: 8px solid #0E5A40; border-radius: 22px; padding: 18px 26px; text-align: right; min-width: 300px; }
+.tt .meter { justify-self: start; margin-top: 10px; min-width: 420px; }
+.meter .lbl { font-family: var(--en); font-size: 20px; letter-spacing: 4px; text-transform: uppercase; color: #8FB9A8; }
+.meter .val { font-family: var(--mono); font-size: 72px; color: var(--amber); line-height: 1.1; }
+.tt .meter .val { font-size: 92px; }
+.meter .sub { font-family: var(--mono); font-size: 24px; color: #8FB9A8; display: flex; justify-content: space-between; gap: 24px; }
+
+.vehicles { background: var(--green); color: #fff; padding: 20px 64px; font-family: var(--si); font-size: 30px; font-weight: 600; display: flex; flex-wrap: wrap; gap: 8px 30px; }
+.tt .vehicles { padding: 24px 150px 24px 72px; font-size: 34px; }
+.vehicles b { font-family: var(--en); font-weight: 700; color: var(--amber); letter-spacing: 2px; font-size: 22px; text-transform: uppercase; align-self: center; }
+
+.features { padding: 40px 64px 0; display: grid; gap: 22px; }
+.tt .features { padding: 54px 150px 0 72px; gap: 34px; }
+.f { display: grid; grid-template-columns: 56px 1fr; gap: 22px; align-items: start; }
+.f .ic { width: 56px; height: 56px; border-radius: 50%; background: var(--soft); color: var(--green); display: grid; place-items: center; font-family: var(--en); font-weight: 900; font-size: 26px; }
+.f .si { font-family: var(--si); font-weight: 600; font-size: 34px; line-height: 1.3; }
+.f .ta { font-family: var(--ta); font-size: 24px; color: var(--muted); line-height: 1.35; }
+.f .en { font-family: var(--en); font-size: 24px; color: var(--muted); }
+.tt .f .si { font-size: 38px; }
+.tt .f .ta, .tt .f .en { font-size: 26px; }
+
+.get { margin: auto 0 0; background: var(--amber); color: var(--ink); padding: 34px 64px 40px; display: grid; gap: 14px; }
+.tt .get { padding: 44px 150px 340px 72px; }
+.get h2 { margin: 0; font-family: var(--si); font-weight: 800; font-size: 40px; line-height: 1.2; }
+.get h2 small { display: block; font-family: var(--ta); font-weight: 600; font-size: 28px; }
+.get h2 small + small { font-family: var(--en); font-weight: 600; }
+.get .url { font-family: var(--mono); font-size: 30px; background: var(--ink); color: var(--amber); border-radius: 14px; padding: 16px 22px; justify-self: start; }
+.get .row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 22px; }
+.get .note { font-family: var(--en); font-weight: 600; font-size: 24px; }
+/* TikTok: no meter (space), smaller top, and the bottom kept clear for TikTok's caption. */
+.tt .meter { display: none; }
+.tt .top { padding-top: 110px; }
+</style>
+</head>
+<body class="{{FORMAT}}">
+<div class="poster">
+  <section class="top">
+    <div>
+      <div class="brand">Hire<span>Meter</span></div>
+      <div class="tag">
+        <div class="si">ඔබේ phone එකම හයර් මීටරයක්</div>
+        <div class="ta">உங்கள் போனே ஹயர் மீட்டர்</div>
+        <div class="en">Your phone is your hire meter · Free</div>
+      </div>
+    </div>
+    <div class="meter" aria-hidden="true">
+      <div class="lbl">Fare · ගාස්තුව</div>
+      <div class="val">Rs. 515</div>
+      <div class="sub"><span>5.50 km</span><span>03:12</span></div>
+    </div>
+  </section>
+
+  <div class="vehicles">
+    <b>For</b>
+    <span>ත්‍රීවීල්</span><span>බයික්</span><span>මිනි කාර්</span><span>ෆ්ලෙක්ස්</span><span>කාර්</span><span>මිනි වෑන්</span><span>වෑන්</span>
+  </div>
+
+  <section class="features">
+    <div class="f"><div class="ic">1</div><div>
+      <div class="si">GPS එකෙන් දුර සහ රැඳී සිටින කාලය ඉබේම ගණන් කරනවා</div>
+      <div class="ta">GPS மூலம் தூரமும் காத்திருப்பு நேரமும் தானாகக் கணக்கிடப்படும்</div>
+      <div class="en">Distance and waiting time measured by GPS</div>
+    </div></div>
+    <div class="f"><div class="ic">2</div><div>
+      <div class="si">ඔබේම මිල ගණන්, අවම ගාස්තුව, එක පාරින් ±5%</div>
+      <div class="ta">உங்கள் சொந்தக் கட்டணங்கள், குறைந்தபட்சக் கட்டணம்</div>
+      <div class="en">Your own rates, a minimum fare, ±5% in one tap</div>
+    </div></div>
+    <div class="f"><div class="ic">3</div><div>
+      <div class="si">සිතියම එක්ක බිල — PDF / WhatsApp</div>
+      <div class="ta">வரைபடத்துடன் பில் — PDF / WhatsApp</div>
+      <div class="en">Bill with the route map, as PDF or on WhatsApp</div>
+    </div></div>
+    <div class="f"><div class="ic">4</div><div>
+      <div class="si">ඔබේ බැංකු QR එකෙන් ගෙවීම · අද ආදායම</div>
+      <div class="ta">வங்கி QR மூலம் கட்டணம் · இன்றைய வருமானம்</div>
+      <div class="en">Pay by your bank QR · today's income</div>
+    </div></div>
+  </section>
+
+  <section class="get">
+    <h2>{{CTA_SI}}<small>{{CTA_TA}}</small><small>{{CTA_EN}}</small></h2>
+    <div class="row"><div class="url">github.com/Roshan6422/hiremeter-app</div><div class="note">Android 8.0+</div></div>
+  </section>
+</div>
+<script>
+// Shrink the feature list just enough that the download box always fits on the image.
+document.fonts.ready.then(() => {
+  const poster = document.querySelector(".poster");
+  const list = document.querySelector(".features");
+  let z = 1;
+  while (poster.scrollHeight > poster.clientHeight && z > 0.7) { z -= 0.02; list.style.zoom = z; }
+  document.body.dataset.fit = poster.scrollHeight <= poster.clientHeight ? "ok" : "overflow";
+});
+</script>
+</body>
+</html>
