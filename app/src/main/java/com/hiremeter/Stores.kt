@@ -1,0 +1,205 @@
+package com.hiremeter
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.os.Build
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+
+/** [icon] is an emoji picture of the vehicle; its name comes from [Strings.vehicleName]. */
+data class Vehicle(val id: String, val icon: String, val rates: Rates)
+
+// The three-wheeler emoji only exists on Android 10 and newer; older phones get a taxi.
+private val TUK_ICON = if (Build.VERSION.SDK_INT >= 29) "🛺" else "🚖"
+
+/**
+ * Starting prices. Three-wheeler: Rs. 110 first km, Rs. 90 after (Western Province revision of
+ * March 2026). The other vehicles and all waiting charges are estimates; the driver sets their own
+ * on the prices screen.
+ */
+val DEFAULT_VEHICLES = listOf(
+    Vehicle("tuk", TUK_ICON, Rates(110.0, 90.0, 5.0)),
+    Vehicle("bike", "🏍️", Rates(60.0, 45.0, 3.0)),
+    Vehicle("mini", "🚗", Rates(150.0, 100.0, 6.0)),
+    Vehicle("flex", "🚐", Rates(160.0, 110.0, 7.0)),
+    Vehicle("car", "🚙", Rates(180.0, 120.0, 8.0)),
+    Vehicle("minivan", "🚌", Rates(200.0, 130.0, 9.0)),
+    Vehicle("van", "🚍", Rates(220.0, 150.0, 10.0)),
+)
+const val DEFAULT_FREE_WAIT_MIN = 3.0
+
+object RatesStore {
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("rates", Context.MODE_PRIVATE)
+
+    fun load(ctx: Context): List<Vehicle> {
+        val saved = prefs(ctx).getString("vehicles", null) ?: return DEFAULT_VEHICLES
+        return try {
+            val byId = JSONObject(saved)
+            DEFAULT_VEHICLES.map { v ->
+                val o = byId.optJSONObject(v.id) ?: return@map v
+                v.copy(rates = Rates(o.getDouble("first"), o.getDouble("perKm"), o.getDouble("wait"), o.optDouble("min", 0.0)))
+            }
+        } catch (e: Exception) {
+            DEFAULT_VEHICLES
+        }
+    }
+
+    fun save(ctx: Context, vehicles: List<Vehicle>) {
+        val byId = JSONObject()
+        for (v in vehicles) {
+            byId.put(
+                v.id,
+                JSONObject().put("first", v.rates.firstKm).put("perKm", v.rates.perKm).put("wait", v.rates.waitPerMin)
+                    .put("min", v.rates.minFare),
+            )
+        }
+        prefs(ctx).edit().putString("vehicles", byId.toString()).apply()
+    }
+
+    fun freeWaitMin(ctx: Context) = prefs(ctx).getFloat("freeWait", DEFAULT_FREE_WAIT_MIN.toFloat()).toDouble()
+    fun setFreeWaitMin(ctx: Context, v: Double) = prefs(ctx).edit().putFloat("freeWait", v.toFloat()).apply()
+
+    fun selectedId(ctx: Context) = prefs(ctx).getString("selected", "tuk") ?: "tuk"
+    fun setSelectedId(ctx: Context, id: String) = prefs(ctx).edit().putString("selected", id).apply()
+}
+
+/**
+ * How customers pay the driver without cash: a picture of the driver's own payment QR (the one their
+ * bank or payment app gave them) and a few lines of account details. The app only shows these; the
+ * money moves in the customer's banking app.
+ */
+object PayStore {
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("pay", Context.MODE_PRIVATE)
+    private fun qrFile(ctx: Context) = File(ctx.filesDir, "pay_qr")
+
+    fun details(ctx: Context) = prefs(ctx).getString("details", "") ?: ""
+    fun setDetails(ctx: Context, v: String) = prefs(ctx).edit().putString("details", v).apply()
+
+    fun hasQr(ctx: Context) = qrFile(ctx).exists()
+    fun removeQr(ctx: Context) { qrFile(ctx).delete() }
+
+    /** Copies the picked picture into the app. False if it could not be read as a picture. */
+    fun saveQr(ctx: Context, uri: Uri): Boolean {
+        return try {
+            ctx.contentResolver.openInputStream(uri)!!.use { input ->
+                qrFile(ctx).outputStream().use { input.copyTo(it) }
+            }
+            if (loadQr(ctx) == null) { removeQr(ctx); false } else true
+        } catch (e: Exception) {
+            removeQr(ctx)
+            false
+        }
+    }
+
+    /** The QR picture, shrunk so a full-size camera photo does not fill the memory. */
+    fun loadQr(ctx: Context): Bitmap? {
+        val path = qrFile(ctx).takeIf { it.exists() }?.path ?: return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1600) sample *= 2
+        return BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+    }
+}
+
+data class Trip(
+    val endedAtMs: Long,
+    val vehicle: String,
+    val distanceM: Double,
+    val waitingMs: Long,
+    val durationMs: Long,
+    val distanceFare: Int,
+    val waitingFare: Int,
+    /** Added so a short trip still cost the minimum fare. */
+    val minimumTopUp: Int = 0,
+) {
+    val total: Int get() = distanceFare + waitingFare + minimumTopUp
+}
+
+object HistoryStore {
+    private const val MAX_TRIPS = 300
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("history", Context.MODE_PRIVATE)
+
+    /** Newest first. */
+    fun load(ctx: Context): List<Trip> {
+        return try {
+            val arr = JSONArray(prefs(ctx).getString("trips", "[]"))
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                Trip(
+                    o.getLong("t"), o.getString("v"), o.getDouble("d"), o.getLong("w"),
+                    o.getLong("dur"), o.getInt("df"), o.getInt("wf"), o.optInt("mf", 0),
+                )
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    fun add(ctx: Context, trip: Trip) {
+        val arr = JSONArray()
+        for (t in (listOf(trip) + load(ctx)).take(MAX_TRIPS)) {
+            arr.put(
+                JSONObject().put("t", t.endedAtMs).put("v", t.vehicle).put("d", t.distanceM).put("w", t.waitingMs)
+                    .put("dur", t.durationMs).put("df", t.distanceFare).put("wf", t.waitingFare).put("mf", t.minimumTopUp),
+            )
+        }
+        prefs(ctx).edit().putString("trips", arr.toString()).apply()
+    }
+
+    fun clear(ctx: Context) = prefs(ctx).edit().remove("trips").apply()
+}
+
+data class TripState(
+    val running: Boolean = false,
+    val startedAtMs: Long = 0,
+    val distanceM: Double = 0.0,
+    val waitingMs: Long = 0,
+    /** False until the first usable GPS reading of this trip arrives. */
+    val hasGps: Boolean = false,
+)
+
+/** The trip in progress. Filled by [MeterService], shown by the screen. */
+object TripRepo {
+    private val _state = MutableStateFlow(TripState())
+    val state: StateFlow<TripState> = _state
+    private var tracker = TripTracker()
+    /** Where the phone roughly is, from WiFi / mobile network. Only for the bill's map, never for the fare. */
+    @Volatile private var roughPlace: LatLon? = null
+
+    fun start(nowMs: Long) {
+        tracker = TripTracker()
+        roughPlace = null
+        _state.value = TripState(running = true, startedAtMs = nowMs)
+    }
+
+    fun onFix(fix: Fix) {
+        if (!_state.value.running) return
+        tracker.onFix(fix)
+        _state.value = _state.value.copy(
+            distanceM = tracker.distanceM,
+            waitingMs = tracker.waitingMs,
+            hasGps = _state.value.hasGps || fix.accuracyM <= TripTracker.MAX_ACCURACY_M,
+        )
+    }
+
+    fun onRoughPlace(place: LatLon) {
+        roughPlace = place
+    }
+
+    /**
+     * A copy of the path driven so far. When the GPS has not found the phone yet (indoors, under a
+     * roof) it is the rough place instead, so the bill can still show where the trip was.
+     */
+    fun routeSnapshot(): List<LatLon> = tracker.route.toList().ifEmpty { listOfNotNull(roughPlace) }
+
+    /** Keeps the totals so the screen can still show the finished trip. */
+    fun stop() {
+        _state.value = _state.value.copy(running = false)
+    }
+}
