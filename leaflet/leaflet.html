@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="si">
+<head>
+<meta charset="utf-8">
+<title>HireMeter Leaflet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Sinhala:wght@400;600;800&family=Noto+Sans+Tamil:wght@400;600&family=Archivo:wght@500;700;900&family=JetBrains+Mono:wght@700&display=swap">
+<style>
+/* Layout: one A5 sheet, a dark "meter display" band on top, features in three languages, then a QR strip to install. */
+:root {
+  --green: #0B6E4F;      /* the app's own colour */
+  --green-deep: #06442F;
+  --amber: #FFC21A;      /* meter readout / three-wheeler yellow */
+  --paper: #FFFFFF;
+  --ink: #14211B;
+  --muted: #55665E;
+  --line: #D5E2DB;
+  --display: "Archivo", "Noto Sans Sinhala", "Nirmala UI", sans-serif;
+  --si: "Noto Sans Sinhala", "Nirmala UI", sans-serif;
+  --ta: "Noto Sans Tamil", "Nirmala UI", sans-serif;
+  --en: "Archivo", "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", "Consolas", monospace;
+}
+@page { size: A5; margin: 0; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); }
+body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.sheet { width: 148mm; height: 210mm; overflow: hidden; display: flex; flex-direction: column; }
+
+.top { background: var(--green-deep); color: #fff; padding: 9mm 9mm 7mm; display: grid; grid-template-columns: 1fr auto; gap: 4mm; align-items: center; }
+.brand { font-family: var(--display); font-weight: 900; font-size: 25pt; letter-spacing: -0.5px; line-height: 1; }
+.brand span { color: var(--amber); }
+.tag { margin-top: 3mm; display: grid; gap: 1mm; }
+.tag .si { font-family: var(--si); font-weight: 800; font-size: 14pt; line-height: 1.25; }
+.tag .ta { font-family: var(--ta); font-weight: 600; font-size: 9.5pt; opacity: .92; }
+.tag .en { font-family: var(--en); font-weight: 500; font-size: 9pt; opacity: .8; }
+.meter { background: #021A12; border: 1.2mm solid #0E5A40; border-radius: 3mm; padding: 2.5mm 3.5mm; text-align: right; min-width: 37mm; }
+.meter .lbl { font-family: var(--en); font-size: 6pt; letter-spacing: 1.5px; text-transform: uppercase; color: #8FB9A8; }
+.meter .val { font-family: var(--mono); font-size: 19pt; color: var(--amber); line-height: 1.1; }
+.meter .sub { font-family: var(--mono); font-size: 7pt; color: #8FB9A8; display: flex; justify-content: space-between; gap: 3mm; }
+
+.vehicles { background: var(--green); color: #fff; padding: 2.4mm 9mm; font-family: var(--si); font-size: 8.5pt; font-weight: 600; display: flex; flex-wrap: wrap; gap: 1.5mm 4mm; }
+.vehicles b { font-family: var(--en); font-weight: 700; color: var(--amber); letter-spacing: .5px; font-size: 7pt; text-transform: uppercase; align-self: center; }
+
+.features { padding: 5mm 9mm 2mm; display: grid; gap: 3.2mm; flex: 1; }
+.f { display: grid; grid-template-columns: 7mm 1fr; gap: 3mm; align-items: start; }
+.f .ic { width: 7mm; height: 7mm; border-radius: 50%; background: #E6F2EC; color: var(--green); display: grid; place-items: center; font-family: var(--en); font-weight: 900; font-size: 9pt; }
+.f .si { font-family: var(--si); font-weight: 600; font-size: 10.5pt; line-height: 1.3; }
+.f .ta { font-family: var(--ta); font-size: 8pt; color: var(--muted); line-height: 1.35; }
+.f .en { font-family: var(--en); font-size: 8pt; color: var(--muted); }
+
+.install { margin: 0 9mm 0; border-top: 0.4mm dashed var(--line); padding-top: 4mm; display: grid; grid-template-columns: 40mm 1fr; gap: 5mm; align-items: center; }
+.qr { width: 40mm; height: 40mm; padding: 2mm; border: 0.8mm solid var(--green); border-radius: 2.5mm; background: #fff; }
+.qr svg { width: 100%; height: 100%; display: block; }
+.steps h2 { margin: 0 0 2mm; font-family: var(--si); font-size: 11.5pt; font-weight: 800; color: var(--green-deep); }
+.steps h2 small { display: block; font-family: var(--en); font-size: 7.5pt; font-weight: 500; color: var(--muted); }
+.steps ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 1.6mm; counter-reset: s; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 4.5mm 1fr; gap: 1.8mm; }
+.steps li::before { content: counter(s); width: 4.5mm; height: 4.5mm; border-radius: 50%; background: var(--amber); color: var(--ink); font-family: var(--en); font-weight: 900; font-size: 7pt; display: grid; place-items: center; }
+.steps .si { font-family: var(--si); font-size: 8.3pt; font-weight: 600; line-height: 1.3; }
+.steps .t2 { font-family: var(--ta); font-size: 6.6pt; color: var(--muted); }
+.steps .t3 { font-family: var(--en); font-size: 6.6pt; color: var(--muted); }
+
+.foot { margin-top: 4mm; background: #F1F7F4; padding: 3mm 9mm; display: flex; justify-content: space-between; align-items: center; gap: 4mm; font-family: var(--en); font-size: 7.5pt; color: var(--muted); }
+.foot .free { font-family: var(--si); font-weight: 800; color: var(--green); font-size: 10pt; }
+.foot .free span { font-family: var(--ta); font-weight: 600; font-size: 8pt; }
+.foot .url { font-family: var(--mono); font-size: 7.5pt; color: var(--ink); word-break: break-all; text-align: right; }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <section class="top">
+    <div>
+      <div class="brand">Hire<span>Meter</span></div>
+      <div class="tag">
+        <div class="si">ඔබේ phone එකම හයර් මීටරයක්</div>
+        <div class="ta">உங்கள் போனே ஹயர் மீட்டர்</div>
+        <div class="en">Your phone is your hire meter</div>
+      </div>
+    </div>
+    <div class="meter" aria-hidden="true">
+      <div class="lbl">Fare · ගාස්තුව</div>
+      <div class="val">Rs. 515</div>
+      <div class="sub"><span>5.50 km</span><span>03:12</span></div>
+    </div>
+  </section>
+
+  <div class="vehicles">
+    <b>For</b>
+    <span>ත්‍රීවීල්</span><span>බයික්</span><span>මිනි කාර්</span><span>ෆ්ලෙක්ස්</span><span>කාර්</span><span>මිනි වෑන්</span><span>වෑන්</span>
+  </div>
+
+  <section class="features">
+    <div class="f"><div class="ic">1</div><div>
+      <div class="si">GPS එකෙන් දුර සහ රැඳී සිටින කාලය ඉබේම ගණන් කරනවා</div>
+      <div class="ta">GPS மூலம் தூரமும் காத்திருப்பு நேரமும் தானாகக் கணக்கிடப்படும்</div>
+      <div class="en">Distance and waiting time measured by GPS</div>
+    </div></div>
+    <div class="f"><div class="ic">2</div><div>
+      <div class="si">ඔබේම මිල ගණන්, අවම ගාස්තුව, එක පාරින් ±5%</div>
+      <div class="ta">உங்கள் சொந்தக் கட்டணங்கள், குறைந்தபட்சக் கட்டணம், ஒரே முறையில் ±5%</div>
+      <div class="en">Your own rates, a minimum fare, and ±5% in one tap</div>
+    </div></div>
+    <div class="f"><div class="ic">3</div><div>
+      <div class="si">ගිය පාරේ සිතියම එක්ක බිල — PDF / WhatsApp</div>
+      <div class="ta">சென்ற பாதையின் வரைபடத்துடன் பில் — PDF / WhatsApp</div>
+      <div class="en">Bill with the route map, sent as PDF or on WhatsApp</div>
+    </div></div>
+    <div class="f"><div class="ic">4</div><div>
+      <div class="si">ඔබේ බැංකු QR එකෙන් customer ට ගෙවන්න පුළුවන්</div>
+      <div class="ta">உங்கள் வங்கி QR மூலம் வாடிக்கையாளர் செலுத்தலாம்</div>
+      <div class="en">Customers pay with your own bank QR</div>
+    </div></div>
+    <div class="f"><div class="ic">5</div><div>
+      <div class="si">අද ආදායම සහ ගමන් ලැයිස්තුව · සිංහල / தமிழ் / English</div>
+      <div class="ta">இன்றைய வருமானம், பயணப் பட்டியல் · மூன்று மொழிகள்</div>
+      <div class="en">Today's income and trip list, in three languages</div>
+    </div></div>
+  </section>
+
+  <section class="install">
+    <div class="qr">{{QR_SVG}}</div>
+    <div class="steps">
+      <h2>Install කරන්නේ මෙහෙමයි<small>நிறுவுவது எப்படி · How to install</small></h2>
+      <ol>
+        <li><div><div class="si">Phone camera එකෙන් QR එක scan කරන්න</div><div class="t2">QR-ஐ ஸ்கேன் செய்யவும்</div><div class="t3">Scan the QR code</div></div></li>
+        <li><div><div class="si">HireMeter.apk download කරලා open කරන්න</div><div class="t2">HireMeter.apk-ஐ பதிவிறக்கித் திறக்கவும்</div><div class="t3">Download and open HireMeter.apk</div></div></li>
+        <li><div><div class="si">"Install unknown apps" අවසරය දීලා Install ඔබන්න</div><div class="t2">"Install unknown apps" அனுமதி கொடுத்து Install அழுத்தவும்</div><div class="t3">Allow "Install unknown apps", then tap Install</div></div></li>
+        <li><div><div class="si">App එකට Location අවසරය දෙන්න</div><div class="t2">Location அனுமதி கொடுக்கவும்</div><div class="t3">Allow Location for the meter</div></div></li>
+      </ol>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <div class="free">නොමිලේ · <span>இலவசம்</span> · Free<div style="font-family:var(--en);font-weight:500;font-size:7pt;color:var(--muted)">Android 8.0+</div></div>
+    <div class="url">{{SHORT_URL}}</div>
+  </footer>
+</div>
+</body>
+</html>
