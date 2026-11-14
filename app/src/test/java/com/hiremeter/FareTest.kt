@@ -39,6 +39,12 @@ class FareTest {
         assertEquals(Rates(190.0, 95.0, 4.5), adjustRates(r, -5.0))
     }
 
+    @Test fun anyPercentageWorks() {
+        val r = Rates(firstKm = 200.0, perKm = 100.0, waitPerMin = 5.0, minFare = 300.0)
+        assertEquals(Rates(204.0, 102.0, 5.5, 306.0), adjustRates(r, 2.0))
+        assertEquals(Rates(194.0, 97.0, 4.5, 291.0), adjustRates(r, -3.0))
+    }
+
     @Test fun smallRatesStillMoveAndNeverGoBelowZero() {
         assertEquals(1.0, adjustRates(Rates(0.0, 0.0, 0.5), 5.0).waitPerMin, 0.0)
         assertEquals(0.0, adjustRates(Rates(0.0, 0.0, 0.5), -5.0).waitPerMin, 0.0)

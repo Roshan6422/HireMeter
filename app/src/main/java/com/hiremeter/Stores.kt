@@ -32,6 +32,8 @@ val DEFAULT_VEHICLES = listOf(
     Vehicle("van", "🚐", Rates(220.0, 150.0, 10.0)),
 )
 const val DEFAULT_FREE_WAIT_MIN = 3.0
+/** The largest change the "change all rates" box accepts in one press. */
+const val MAX_ADJUST_PCT = 50.0
 
 object RatesStore {
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("rates", Context.MODE_PRIVATE)
@@ -63,6 +65,10 @@ object RatesStore {
 
     fun freeWaitMin(ctx: Context) = prefs(ctx).getFloat("freeWait", DEFAULT_FREE_WAIT_MIN.toFloat()).toDouble()
     fun setFreeWaitMin(ctx: Context, v: Double) = prefs(ctx).edit().putFloat("freeWait", v.toFloat()).apply()
+
+    /** The percentage last used to change all rates at once. */
+    fun adjustPct(ctx: Context) = prefs(ctx).getFloat("adjustPct", 5f).toDouble()
+    fun setAdjustPct(ctx: Context, v: Double) = prefs(ctx).edit().putFloat("adjustPct", v.toFloat()).apply()
 
     fun selectedId(ctx: Context) = prefs(ctx).getString("selected", "tuk") ?: "tuk"
     fun setSelectedId(ctx: Context, id: String) = prefs(ctx).edit().putString("selected", id).apply()

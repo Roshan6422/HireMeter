@@ -422,16 +422,39 @@ fun RatesScreen(
             Column(Modifier.padding(12.dp)) {
                 Text(s.adjustAllTitle, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 Text(s.adjustAllHint, fontSize = 12.sp, color = Color.Gray)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                    Button(
-                        onClick = { onAdjustAll(-5.0) },
+                // Any percentage the driver types, e.g. 2 or 3.5; remembered for next time.
+                val ctx = LocalContext.current
+                var pctText by remember { mutableStateOf(plain(RatesStore.adjustPct(ctx))) }
+                val pct = pctText.toDoubleOrNull()?.takeIf { it > 0 && it <= MAX_ADJUST_PCT }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = pctText,
+                        onValueChange = { new ->
+                            pctText = new
+                            new.toDoubleOrNull()?.takeIf { it > 0 && it <= MAX_ADJUST_PCT }?.let { RatesStore.setAdjustPct(ctx, it) }
+                        },
+                        label = { Text("%", fontSize = 11.sp) },
                         enabled = !locked,
+                        isError = pct == null,
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier.weight(0.8f),
+                    )
+                    Button(
+                        onClick = { pct?.let { onAdjustAll(-it) } },
+                        enabled = !locked && pct != null,
                         colors = ButtonDefaults.buttonColors(containerColor = Red),
-                        modifier = Modifier.weight(1f),
-                    ) { Text("−5%", fontSize = 18.sp) }
-                    Button(onClick = { onAdjustAll(5.0) }, enabled = !locked, modifier = Modifier.weight(1f)) {
-                        Text("+5%", fontSize = 18.sp)
-                    }
+                        modifier = Modifier.weight(1f).height(56.dp),
+                    ) { Text("−${plain(pct ?: 0.0)}%", fontSize = 17.sp, maxLines = 1) }
+                    Button(
+                        onClick = { pct?.let { onAdjustAll(it) } },
+                        enabled = !locked && pct != null,
+                        modifier = Modifier.weight(1f).height(56.dp),
+                    ) { Text("+${plain(pct ?: 0.0)}%", fontSize = 17.sp, maxLines = 1) }
                 }
             }
         }
