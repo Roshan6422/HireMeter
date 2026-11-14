@@ -26,10 +26,10 @@ val DEFAULT_VEHICLES = listOf(
     Vehicle("tuk", TUK_ICON, Rates(110.0, 90.0, 5.0)),
     Vehicle("bike", "🏍️", Rates(60.0, 45.0, 3.0)),
     Vehicle("mini", "🚗", Rates(150.0, 100.0, 6.0)),
-    Vehicle("flex", "🚐", Rates(160.0, 110.0, 7.0)),
-    Vehicle("car", "🚙", Rates(180.0, 120.0, 8.0)),
-    Vehicle("minivan", "🚌", Rates(200.0, 130.0, 9.0)),
-    Vehicle("van", "🚍", Rates(220.0, 150.0, 10.0)),
+    Vehicle("flex", "🚗", Rates(160.0, 110.0, 7.0)),
+    Vehicle("car", "🚗", Rates(180.0, 120.0, 8.0)),
+    Vehicle("minivan", "🚐", Rates(200.0, 130.0, 9.0)),
+    Vehicle("van", "🚐", Rates(220.0, 150.0, 10.0)),
 )
 const val DEFAULT_FREE_WAIT_MIN = 3.0
 
