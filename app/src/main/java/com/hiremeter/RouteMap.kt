@@ -17,16 +17,16 @@ import kotlin.math.floor
  * When the vehicle never moved there is only one point, and the map shows that place with a pin.
  * Returns null only when the GPS gave no usable reading at all.
  */
-suspend fun renderRouteMap(route: List<LatLon>, widthPx: Int, heightPx: Int): Bitmap? {
+suspend fun renderRouteMap(route: List<LatLon>, widthPx: Int, heightPx: Int, breaks: List<Int> = emptyList()): Bitmap? {
     if (route.isEmpty()) return null
-    return renderOsmMap(route, widthPx, heightPx)
+    return renderOsmMap(route, widthPx, heightPx, breaks.toSet())
 }
 
 /**
  * The route on an OpenStreetMap map. The map squares are downloaded from openstreetmap.org; a
  * square that cannot be downloaded stays grey and the route is still drawn.
  */
-private suspend fun renderOsmMap(route: List<LatLon>, widthPx: Int, heightPx: Int): Bitmap {
+private suspend fun renderOsmMap(route: List<LatLon>, widthPx: Int, heightPx: Int, breaks: Set<Int>): Bitmap {
     return withContext(Dispatchers.IO) {
         val zoom = MapMath.chooseZoom(route, widthPx, heightPx)
         val xs = route.map { MapMath.worldX(it.lon, zoom) }
@@ -60,7 +60,8 @@ private suspend fun renderOsmMap(route: List<LatLon>, widthPx: Int, heightPx: In
         for (i in route.indices) {
             val x = (xs[i] - originX).toFloat()
             val y = (ys[i] - originY).toFloat()
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            // A new piece after a pause starts fresh, with no line across the gap.
+            if (i == 0 || i in breaks) path.moveTo(x, y) else path.lineTo(x, y)
         }
         // A white edge first, then the blue route on top of it.
         canvas.drawPath(path, line.apply { color = Color.WHITE; strokeWidth = 17f })

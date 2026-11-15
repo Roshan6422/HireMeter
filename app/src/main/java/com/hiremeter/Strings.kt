@@ -36,6 +36,10 @@ class Strings(
     val noTrips: String, val clearTrips: String, val clearConfirmTitle: String, val clearConfirmText: String,
     val delete: String, val cancel: String,
     val notifText: String, val language: String,
+    val pauseTrip: String, val resumeTrip: String,
+    /** time paused so far */
+    val pausedBanner: String,
+    val pausedTime: String, val notifPaused: String,
     val viewOnGoogle: String, val routeLink: String,
     val tuk: String, val bike: String, val mini: String, val flex: String, val car: String, val minivan: String, val van: String,
 ) {
@@ -79,6 +83,9 @@ private val SINHALA = Strings(
     clearTrips = "ගමන් ලැයිස්තුව මකන්න", clearConfirmTitle = "ගමන් ඔක්කොම මකන්නද?",
     clearConfirmText = "මේක ආයේ ගන්න බෑ.", delete = "මකන්න", cancel = "එපා",
     notifText = "ගමන මනිමින් පවතී", language = "භාෂාව",
+    pauseTrip = "මීටරය නවත්වන්න (Pause)", resumeTrip = "මීටරය ආයෙ පටන් ගන්න",
+    pausedBanner = "⏸ මීටරය නවත්වලා · %s\nදුර සහ කාලය ගණන් වෙන්නේ නෑ. GPS එක off.",
+    pausedTime = "නවත්වා තිබූ කාලය (ගාස්තු නැත)", notifPaused = "මීටරය නවත්වා ඇත (Pause)",
     viewOnGoogle = "🗺️ Google Maps එකෙන් බලන්න", routeLink = "ගිය පාර:",
     tuk = "ත්‍රීවීල්", bike = "බයික්", mini = "මිනි කාර්", flex = "ෆ්ලෙක්ස්", car = "කාර්", minivan = "මිනි වෑන්", van = "වෑන්",
 )
@@ -112,6 +119,9 @@ private val TAMIL = Strings(
     clearTrips = "பயணப் பட்டியலை அழி", clearConfirmTitle = "எல்லாப் பயணங்களையும் அழிக்கவா?",
     clearConfirmText = "இதை மீட்டெடுக்க முடியாது.", delete = "அழி", cancel = "வேண்டாம்",
     notifText = "பயணம் அளக்கப்படுகிறது", language = "மொழி",
+    pauseTrip = "மீட்டரை இடைநிறுத்து", resumeTrip = "மீட்டரைத் தொடர்",
+    pausedBanner = "⏸ மீட்டர் இடைநிறுத்தப்பட்டுள்ளது · %s\nதூரமும் நேரமும் கணக்கிடப்படாது. GPS அணைக்கப்பட்டுள்ளது.",
+    pausedTime = "இடைநிறுத்திய நேரம் (கட்டணம் இல்லை)", notifPaused = "மீட்டர் இடைநிறுத்தப்பட்டுள்ளது",
     viewOnGoogle = "🗺️ Google Maps-இல் பார்க்க", routeLink = "சென்ற பாதை:",
     tuk = "முச்சக்கர வண்டி", bike = "பைக்", mini = "மினி கார்", flex = "ஃப்ளெக்ஸ்", car = "கார்", minivan = "மினி வேன்", van = "வேன்",
 )
@@ -145,6 +155,9 @@ private val ENGLISH = Strings(
     clearTrips = "Clear trip list", clearConfirmTitle = "Delete all trips?",
     clearConfirmText = "This cannot be undone.", delete = "Delete", cancel = "Cancel",
     notifText = "Measuring the trip", language = "Language",
+    pauseTrip = "Pause meter", resumeTrip = "Resume meter",
+    pausedBanner = "⏸ Meter paused · %s\nDistance and time are not counted. GPS is off.",
+    pausedTime = "Paused (not charged)", notifPaused = "Meter paused",
     viewOnGoogle = "🗺️ View on Google Maps", routeLink = "Route:",
     tuk = "Three-wheeler", bike = "Bike", mini = "Mini car", flex = "Flex", car = "Car", minivan = "Mini van", van = "Van",
 )

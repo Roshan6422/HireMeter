@@ -133,9 +133,22 @@ class TripTracker {
         private set
     private var last: Fix? = null
     private val points = ArrayList<LatLon>()
+    private val breaks = ArrayList<Int>()
 
     /** The path driven so far, for drawing on the bill's map. */
     val route: List<LatLon> get() = points
+
+    /** Where in [route] a new piece starts after a pause; the map draws no line across the gap. */
+    val routeBreaks: List<Int> get() = breaks
+
+    /**
+     * The meter was paused and is running again, maybe somewhere else entirely. The next reading
+     * starts a new piece of route and adds no distance from where the last piece ended.
+     */
+    fun newPiece() {
+        last = null
+        if (points.isNotEmpty() && breaks.lastOrNull() != points.size) breaks.add(points.size)
+    }
 
     private fun addPoint(fix: Fix) {
         points.add(LatLon(fix.lat, fix.lon))
@@ -144,6 +157,10 @@ class TripTracker {
             val kept = points.filterIndexed { i, _ -> i % 2 == 0 }
             points.clear()
             points.addAll(kept)
+            // A piece starting at an odd index now starts at the next kept point.
+            val moved = breaks.map { (it + 1) / 2 }.distinct()
+            breaks.clear()
+            breaks.addAll(moved)
         }
     }
 

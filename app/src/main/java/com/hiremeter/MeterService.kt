@@ -25,10 +25,32 @@ class MeterService : Service(), LocationListener {
 
     @SuppressLint("MissingPermission") // MainActivity only starts the service after the permission is granted
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
-        ServiceCompat.startForeground(this, 1, notification(), type)
-        TripRepo.start(System.currentTimeMillis())
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        when (intent?.action) {
+            ACTION_PAUSE -> {
+                // The driver is away on other hires: the GPS goes off, nothing is counted.
+                TripRepo.pause(System.currentTimeMillis())
+                lm.removeUpdates(this)
+                lm.removeUpdates(roughListener)
+                showNotification(paused = true)
+            }
+            ACTION_RESUME -> {
+                TripRepo.resume(System.currentTimeMillis())
+                listen(lm)
+                showNotification(paused = false)
+            }
+            else -> {
+                val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
+                ServiceCompat.startForeground(this, 1, notification(paused = false), type)
+                TripRepo.start(System.currentTimeMillis())
+                listen(lm)
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    @SuppressLint("MissingPermission") // MainActivity only starts the service after the permission is granted
+    private fun listen(lm: LocationManager) {
         lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, this, Looper.getMainLooper())
         // The network position works indoors, where GPS often finds nothing. It only marks the place on the map.
         listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER)
@@ -37,7 +59,10 @@ class MeterService : Service(), LocationListener {
         runCatching {
             lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 5000L, 0f, roughListener, Looper.getMainLooper())
         }
-        return START_NOT_STICKY
+    }
+
+    private fun showNotification(paused: Boolean) {
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(1, notification(paused))
     }
 
     private val roughListener = object : LocationListener {
@@ -74,7 +99,7 @@ class MeterService : Service(), LocationListener {
         super.onDestroy()
     }
 
-    private fun notification(): Notification {
+    private fun notification(paused: Boolean): Notification {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Trip meter", NotificationManager.IMPORTANCE_LOW))
         val open = PendingIntent.getActivity(
@@ -82,14 +107,16 @@ class MeterService : Service(), LocationListener {
         )
         return Notification.Builder(this, CHANNEL)
             .setContentTitle("HireMeter")
-            .setContentText(Tr.s.notifText)
+            .setContentText(if (paused) Tr.s.notifPaused else Tr.s.notifText)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(open)
             .setOngoing(true)
             .build()
     }
 
-    private companion object {
-        const val CHANNEL = "meter"
+    companion object {
+        private const val CHANNEL = "meter"
+        const val ACTION_PAUSE = "com.hiremeter.PAUSE"
+        const val ACTION_RESUME = "com.hiremeter.RESUME"
     }
 }

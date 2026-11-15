@@ -61,6 +61,53 @@ class TripTest {
         assertEquals(1200.0, sim.t.distanceM, 1.0)
     }
 
+    @Test fun upAndDownHireWithAPauseInBetween() {
+        // To Colombo (10 km, 30 min), meter paused 3 hours while the driver does other hires,
+        // resumed 25 km away at the pick-up, back again (10 km, 30 min). One bill for both legs.
+        val m = 1.0 / 111_195.0
+        fun fix(metres: Double, s: Long) = Fix(6.85 + metres * m, 79.95, 5f, 10.0, s * 1000L)
+        val start = 1_000_000L
+        TripRepo.start(start)
+        for (i in 0..1800) TripRepo.onFix(fix(i * 10_000.0 / 1800, i.toLong()))
+        TripRepo.pause(start + 1800_000)
+        // Readings while paused (if any arrive) are ignored.
+        for (i in 1801..1900) TripRepo.onFix(fix(10_000.0 + (i - 1800) * 10, i.toLong()))
+        TripRepo.resume(start + 1800_000 + 3 * 3600_000)
+        val back = 1800L + 3 * 3600
+        for (i in 0..1800) TripRepo.onFix(fix(25_000.0 - i * 10_000.0 / 1800, back + i))
+        val end = start + 3600_000 + 3 * 3600_000
+        val s = TripRepo.state.value
+        TripRepo.stop()
+
+        // The 15 km jump from where it paused to where it resumed is not counted.
+        assertEquals(20_000.0, s.distanceM, 5.0)
+        assertEquals(3600_000L, s.activeMs(end))
+        assertEquals(3 * 3600_000L, s.pausedMs(end))
+        // 20 km = 110 + 19 x 90 = 1820; 60 minutes x Rs. 2 = 120.
+        assertEquals(FareBreakdown(1820, 120), calculateFare(s.distanceM, s.activeMs(end), tuk))
+        // The map starts the second piece where the meter was resumed, 25 km out.
+        val route = TripRepo.routeSnapshot()
+        val b = TripRepo.routeBreaksSnapshot().single()
+        assertEquals(6.85 + 25_000.0 * m, route[b].lat, 20 * m)
+    }
+
+    @Test fun pausedTimeKeepsGrowingUntilResumed() {
+        val s = TripState(running = true, startedAtMs = 0, pausedAtMs = 600_000, pausedTotalMs = 120_000)
+        assertEquals(120_000L + 300_000, s.pausedMs(900_000))
+        assertEquals(900_000L - 420_000, s.activeMs(900_000))
+    }
+
+    @Test fun breaksFollowTheRouteWhenALongTripIsThinned() {
+        val t = TripTracker()
+        fun fix(i: Int) = Fix(6.0 + i * 0.0001, 80.0, 5f, 11.0, i * 1000L)
+        for (i in 0 until 1001) t.onFix(fix(i))
+        t.newPiece()
+        for (i in 1001 until 3001) t.onFix(fix(i))
+        val b = t.routeBreaks.single()
+        // The piece after the pause still starts with the first reading taken after it.
+        assertEquals(6.0 + 1001 * 0.0001, t.route[b].lat, 0.00011)
+    }
+
     @Test fun timeIsChargedEvenWithoutGps() {
         // Time comes from the clock, not the GPS: 10 minutes parked with no signal still cost 10 minutes.
         val sim = Sim()

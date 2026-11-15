@@ -77,6 +77,7 @@ import kotlin.math.max
 
 private val Green = Color(0xFF0B6E4F)
 private val Red = Color(0xFFC62828)
+private val Amber = Color(0xFFB26A00)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -107,6 +108,7 @@ fun billText(t: Trip, route: List<LatLon>) = buildString {
     appendLine("${s.vehicleLabel}: ${t.vehicle}")
     appendLine("${s.distance}: ${km(t.distanceM)}  →  ${rs(t.distanceFare)}")
     appendLine("${s.elapsed}: ${clock(t.durationMs)}  →  ${rs(t.timeFare)}")
+    if (t.pausedMs > 0) appendLine("${s.pausedTime}: ${clock(t.pausedMs)}")
     if (t.minimumTopUp > 0) appendLine("${s.minFareTopUp}: ${rs(t.minimumTopUp)}")
     append("${s.total}: ${rs(t.total)}")
     googleMapsLink(route)?.let { append("\n\n${s.routeLink}\n$it") }
@@ -190,6 +192,7 @@ fun MeterScreen(
     val vehicle = vehicles.firstOrNull { it.id == selectedId } ?: vehicles.first()
     var finished by remember { mutableStateOf<Trip?>(null) }
     var finishedRoute by remember { mutableStateOf<List<LatLon>>(emptyList()) }
+    var finishedBreaks by remember { mutableStateOf<List<Int>>(emptyList()) }
     var payFor by remember { mutableStateOf<Trip?>(null) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(trip.running) {
@@ -198,14 +201,15 @@ fun MeterScreen(
             delay(1000)
         }
     }
-    LocalView.current.keepScreenOn = trip.running
+    // While paused the driver is in other apps; the screen may sleep.
+    LocalView.current.keepScreenOn = trip.running && !trip.paused
 
     val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         if (hasLocationPermission(ctx)) startTrip(ctx)
         else Toast.makeText(ctx, Tr.s.noPermission, Toast.LENGTH_LONG).show()
     }
 
-    val elapsedMs = if (trip.running) max(0L, now - trip.startedAtMs) else 0L
+    val elapsedMs = if (trip.running) trip.activeMs(now) else 0L
     val fare = calculateFare(trip.distanceM, elapsedMs, vehicle.rates)
     val showTrip = trip.running
 
@@ -261,7 +265,13 @@ fun MeterScreen(
             Stat(s.elapsed, clock(elapsedMs), Modifier.weight(1f))
         }
 
-        if (trip.running && !trip.hasGps) {
+        if (trip.paused) {
+            Text(
+                s.pausedBanner.format(clock(trip.pausedMs(now))),
+                color = Amber, fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 12.dp), textAlign = TextAlign.Center,
+            )
+        } else if (trip.running && !trip.hasGps) {
             Text(s.gpsSearching, color = Red, modifier = Modifier.padding(top = 12.dp), textAlign = TextAlign.Center)
         }
 
@@ -283,8 +293,17 @@ fun MeterScreen(
         } else {
             Button(
                 onClick = {
+                    val action = if (trip.paused) MeterService.ACTION_RESUME else MeterService.ACTION_PAUSE
+                    ctx.startService(Intent(ctx, MeterService::class.java).setAction(action))
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = if (trip.paused) Green else Amber),
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+            ) { Text(if (trip.paused) "▶  ${s.resumeTrip}" else "⏸  ${s.pauseTrip}", fontSize = 18.sp) }
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = {
                     val endMs = System.currentTimeMillis()
-                    val tripMs = max(0L, endMs - trip.startedAtMs)
+                    val tripMs = trip.activeMs(endMs)
                     val endFare = calculateFare(trip.distanceM, tripMs, vehicle.rates)
                     val done = Trip(
                         endedAtMs = endMs,
@@ -294,8 +313,10 @@ fun MeterScreen(
                         distanceFare = endFare.distanceFare,
                         timeFare = endFare.timeFare,
                         minimumTopUp = endFare.minimumTopUp,
+                        pausedMs = trip.pausedMs(endMs),
                     )
                     finishedRoute = TripRepo.routeSnapshot()
+                    finishedBreaks = TripRepo.routeBreaksSnapshot()
                     ctx.stopService(Intent(ctx, MeterService::class.java))
                     HistoryStore.add(ctx, done)
                     onTripSaved()
@@ -313,7 +334,8 @@ fun MeterScreen(
 
     finished?.let { t ->
         val route = finishedRoute
-        val map by produceState<Bitmap?>(null, t) { value = renderRouteMap(route, 800, 480) }
+        val breaks = finishedBreaks
+        val map by produceState<Bitmap?>(null, t) { value = renderRouteMap(route, 800, 480, breaks) }
         AlertDialog(
             onDismissRequest = { finished = null },
             title = { Text("🚕 ${s.billTitle}") },
@@ -332,6 +354,7 @@ fun MeterScreen(
                     BillRow(s.date, SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(t.endedAtMs)))
                     BillRow(s.distance, km(t.distanceM))
                     BillRow(s.elapsed, clock(t.durationMs))
+                    if (t.pausedMs > 0) BillRow(s.pausedTime, clock(t.pausedMs))
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     BillRow(s.distanceFare, rs(t.distanceFare))
                     BillRow(s.timeFare, rs(t.timeFare))

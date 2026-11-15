@@ -121,6 +121,8 @@ data class Trip(
     val timeFare: Int,
     /** Added so a short trip still cost the minimum fare. */
     val minimumTopUp: Int = 0,
+    /** Time the meter was paused (the driver away on other hires). Not charged. */
+    val pausedMs: Long = 0,
 ) {
     val total: Int get() = distanceFare + timeFare + minimumTopUp
 }
@@ -137,7 +139,7 @@ object HistoryStore {
                 val o = arr.getJSONObject(i)
                 Trip(
                     o.getLong("t"), o.getString("v"), o.getDouble("d"),
-                    o.getLong("dur"), o.getInt("df"), o.getInt("wf"), o.optInt("mf", 0),
+                    o.getLong("dur"), o.getInt("df"), o.getInt("wf"), o.optInt("mf", 0), o.optLong("p", 0L),
                 )
             }
         } catch (e: Exception) {
@@ -150,7 +152,7 @@ object HistoryStore {
         for (t in (listOf(trip) + load(ctx)).take(MAX_TRIPS)) {
             arr.put(
                 JSONObject().put("t", t.endedAtMs).put("v", t.vehicle).put("d", t.distanceM)
-                    .put("dur", t.durationMs).put("df", t.distanceFare).put("wf", t.timeFare).put("mf", t.minimumTopUp),
+                    .put("dur", t.durationMs).put("df", t.distanceFare).put("wf", t.timeFare).put("mf", t.minimumTopUp).put("p", t.pausedMs),
             )
         }
         prefs(ctx).edit().putString("trips", arr.toString()).apply()
@@ -163,9 +165,21 @@ data class TripState(
     val running: Boolean = false,
     val startedAtMs: Long = 0,
     val distanceM: Double = 0.0,
-    /** False until the first usable GPS reading of this trip arrives. */
+    /** False until the first usable GPS reading of this trip (or since resuming) arrives. */
     val hasGps: Boolean = false,
-)
+    /** When the meter was paused, or null while it runs. */
+    val pausedAtMs: Long? = null,
+    /** All earlier pauses of this trip together. */
+    val pausedTotalMs: Long = 0,
+) {
+    val paused: Boolean get() = pausedAtMs != null
+
+    /** Time paused so far, including a pause still going on. */
+    fun pausedMs(nowMs: Long): Long = pausedTotalMs + (pausedAtMs?.let { maxOf(0L, nowMs - it) } ?: 0L)
+
+    /** Time the meter has been running: what is charged. */
+    fun activeMs(nowMs: Long): Long = maxOf(0L, nowMs - startedAtMs - pausedMs(nowMs))
+}
 
 /** The trip in progress. Filled by [MeterService], shown by the screen. */
 object TripRepo {
@@ -181,8 +195,22 @@ object TripRepo {
         _state.value = TripState(running = true, startedAtMs = nowMs)
     }
 
+    /** Stops counting distance and time until [resume], e.g. while the driver does other hires. */
+    fun pause(nowMs: Long) {
+        val s = _state.value
+        if (!s.running || s.paused) return
+        _state.value = s.copy(pausedAtMs = nowMs)
+    }
+
+    fun resume(nowMs: Long) {
+        val s = _state.value
+        val at = s.pausedAtMs ?: return
+        tracker.newPiece()
+        _state.value = s.copy(pausedAtMs = null, pausedTotalMs = s.pausedTotalMs + maxOf(0L, nowMs - at), hasGps = false)
+    }
+
     fun onFix(fix: Fix) {
-        if (!_state.value.running) return
+        if (!_state.value.running || _state.value.paused) return
         tracker.onFix(fix)
         _state.value = _state.value.copy(
             distanceM = tracker.distanceM,
@@ -199,6 +227,9 @@ object TripRepo {
      * roof) it is the rough place instead, so the bill can still show where the trip was.
      */
     fun routeSnapshot(): List<LatLon> = tracker.route.toList().ifEmpty { listOfNotNull(roughPlace) }
+
+    /** Where the route snapshot's pieces start after each pause. */
+    fun routeBreaksSnapshot(): List<Int> = tracker.routeBreaks.toList()
 
     /** Keeps the totals so the screen can still show the finished trip. */
     fun stop() {
