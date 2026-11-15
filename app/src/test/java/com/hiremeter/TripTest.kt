@@ -91,6 +91,35 @@ class TripTest {
         assertEquals(6.85 + 25_000.0 * m, route[b].lat, 20 * m)
     }
 
+    @Test fun pausedTimeIsChargedAsWaitingOnlyWhenTheDriverChooses() {
+        val r = tuk.copy(waitPerMin = 3.0)
+        // 20 km, 60 minutes driving, 3 hours paused.
+        val notCharged = calculateFare(20_000.0, 3600_000, r)
+        assertEquals(FareBreakdown(1820, 120), notCharged)
+        val charged = calculateFare(20_000.0, 3600_000, r, chargedPauseMs = 3 * 3600_000)
+        // 180 minutes x Rs. 3 = 540 more.
+        assertEquals(FareBreakdown(1820, 120, 0, 540), charged)
+        assertEquals(2480, charged.total)
+    }
+
+    @Test fun waitingCountsTowardsTheMinimumFare() {
+        val r = tuk.copy(minFare = 200.0, waitPerMin = 3.0)
+        // 110 + 0 + 30 minutes paused x 3 = 200: nothing to add.
+        assertEquals(FareBreakdown(110, 0, 0, 90), calculateFare(500.0, 0, r, chargedPauseMs = 1800_000))
+    }
+
+    @Test fun switchingWaitingOnIsKeptOnTheTrip() {
+        TripRepo.start(0)
+        TripRepo.pause(1000)
+        assertEquals(false, TripRepo.state.value.chargePaused)
+        TripRepo.setChargePaused(true)
+        TripRepo.resume(61_000)
+        val s = TripRepo.state.value
+        TripRepo.stop()
+        assertEquals(true, s.chargePaused)
+        assertEquals(60_000L, s.pausedMs(100_000))
+    }
+
     @Test fun pausedTimeKeepsGrowingUntilResumed() {
         val s = TripState(running = true, startedAtMs = 0, pausedAtMs = 600_000, pausedTotalMs = 120_000)
         assertEquals(120_000L + 300_000, s.pausedMs(900_000))

@@ -9,33 +9,41 @@ import kotlin.math.sqrt
 
 /**
  * Prices for one vehicle type, in rupees. [perMin] is charged for every minute of the trip, driving
- * or not, like PickMe and Uber. [minFare] 0 means there is no minimum fare.
+ * or not, like PickMe and Uber. [minFare] 0 means there is no minimum fare. [waitPerMin] is for
+ * time the meter was paused (customers away, e.g. on an up-and-down hire), only when the driver
+ * chooses to charge it.
  */
 data class Rates(
     val firstKm: Double,
     val perKm: Double,
     val perMin: Double,
     val minFare: Double = 0.0,
+    val waitPerMin: Double = 0.0,
 )
 
-/** [minimumTopUp] is what is added so a short trip still costs the minimum fare. */
-data class FareBreakdown(val distanceFare: Int, val timeFare: Int, val minimumTopUp: Int = 0) {
-    val total: Int get() = distanceFare + timeFare + minimumTopUp
+/**
+ * [minimumTopUp] is what is added so a short trip still costs the minimum fare; [waitingFare] is
+ * for paused time the driver chose to charge.
+ */
+data class FareBreakdown(val distanceFare: Int, val timeFare: Int, val minimumTopUp: Int = 0, val waitingFare: Int = 0) {
+    val total: Int get() = distanceFare + timeFare + minimumTopUp + waitingFare
 }
 
 /**
  * The fare the way PickMe and Uber work it out: distance plus time, both always.
  * The first kilometre (or any part of it) costs [Rates.firstKm]; every kilometre after it costs
  * [Rates.perKm], charged by the metre. Every minute of the trip ([tripMs], from start to end)
- * costs [Rates.perMin], charged by the second. However short the trip, the total is never less
+ * costs [Rates.perMin], charged by the second. Paused time the driver chose to charge
+ * ([chargedPauseMs]) costs [Rates.waitPerMin]. However short the trip, the total is never less
  * than [Rates.minFare].
  */
-fun calculateFare(distanceM: Double, tripMs: Long, rates: Rates): FareBreakdown {
+fun calculateFare(distanceM: Double, tripMs: Long, rates: Rates, chargedPauseMs: Long = 0): FareBreakdown {
     val km = distanceM / 1000.0
     val distance = (rates.firstKm + max(0.0, km - 1.0) * rates.perKm).roundToInt()
     val time = (max(0L, tripMs) / 60000.0 * rates.perMin).roundToInt()
-    val topUp = max(0, rates.minFare.roundToInt() - distance - time)
-    return FareBreakdown(distance, time, topUp)
+    val waiting = (max(0L, chargedPauseMs) / 60000.0 * rates.waitPerMin).roundToInt()
+    val topUp = max(0, rates.minFare.roundToInt() - distance - time - waiting)
+    return FareBreakdown(distance, time, topUp, waiting)
 }
 
 /**
@@ -51,7 +59,7 @@ fun adjustRates(rates: Rates, percent: Double): Rates {
         if (n == v) n = if (percent > 0) v + step else v - step
         return max(0.0, n)
     }
-    return Rates(one(rates.firstKm), one(rates.perKm), one(rates.perMin), one(rates.minFare))
+    return Rates(one(rates.firstKm), one(rates.perKm), one(rates.perMin), one(rates.minFare), one(rates.waitPerMin))
 }
 
 /** One GPS reading. [timeMs] only has to increase steadily (it is not a clock time). */

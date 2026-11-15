@@ -23,13 +23,13 @@ private val TUK_ICON = if (Build.VERSION.SDK_INT >= 29) "🛺" else "🚖"
  * about Rs. 4 a minute for a Mini); the driver sets their own on the prices screen.
  */
 val DEFAULT_VEHICLES = listOf(
-    Vehicle("tuk", TUK_ICON, Rates(110.0, 90.0, 2.0)),
-    Vehicle("bike", "🏍️", Rates(60.0, 45.0, 1.0)),
-    Vehicle("mini", "🚗", Rates(150.0, 100.0, 3.0)),
-    Vehicle("flex", "🚗", Rates(160.0, 110.0, 3.0)),
-    Vehicle("car", "🚗", Rates(180.0, 120.0, 4.0)),
-    Vehicle("minivan", "🚐", Rates(200.0, 130.0, 5.0)),
-    Vehicle("van", "🚐", Rates(220.0, 150.0, 6.0)),
+    Vehicle("tuk", TUK_ICON, Rates(110.0, 90.0, 2.0, waitPerMin = 2.0)),
+    Vehicle("bike", "🏍️", Rates(60.0, 45.0, 1.0, waitPerMin = 1.0)),
+    Vehicle("mini", "🚗", Rates(150.0, 100.0, 3.0, waitPerMin = 3.0)),
+    Vehicle("flex", "🚗", Rates(160.0, 110.0, 3.0, waitPerMin = 3.0)),
+    Vehicle("car", "🚗", Rates(180.0, 120.0, 4.0, waitPerMin = 4.0)),
+    Vehicle("minivan", "🚐", Rates(200.0, 130.0, 5.0, waitPerMin = 5.0)),
+    Vehicle("van", "🚐", Rates(220.0, 150.0, 6.0, waitPerMin = 6.0)),
 )
 /** The largest change the "change all rates" box accepts in one press. */
 const val MAX_ADJUST_PCT = 50.0
@@ -44,7 +44,7 @@ object RatesStore {
             DEFAULT_VEHICLES.map { v ->
                 val o = byId.optJSONObject(v.id) ?: return@map v
                 // "wait" (a waiting-only charge in older versions) means something else now, so it is not reused.
-                v.copy(rates = Rates(o.getDouble("first"), o.getDouble("perKm"), o.optDouble("perMin", v.rates.perMin), o.optDouble("min", 0.0)))
+                v.copy(rates = Rates(o.getDouble("first"), o.getDouble("perKm"), o.optDouble("perMin", v.rates.perMin), o.optDouble("min", 0.0), o.optDouble("pauseWait", v.rates.waitPerMin)))
             }
         } catch (e: Exception) {
             DEFAULT_VEHICLES
@@ -57,7 +57,7 @@ object RatesStore {
             byId.put(
                 v.id,
                 JSONObject().put("first", v.rates.firstKm).put("perKm", v.rates.perKm).put("perMin", v.rates.perMin)
-                    .put("min", v.rates.minFare),
+                    .put("min", v.rates.minFare).put("pauseWait", v.rates.waitPerMin),
             )
         }
         prefs(ctx).edit().putString("vehicles", byId.toString()).apply()
@@ -121,10 +121,12 @@ data class Trip(
     val timeFare: Int,
     /** Added so a short trip still cost the minimum fare. */
     val minimumTopUp: Int = 0,
-    /** Time the meter was paused (the driver away on other hires). Not charged. */
+    /** Time the meter was paused (the driver away on other hires). */
     val pausedMs: Long = 0,
+    /** Charged for the paused time, when the driver chose to; 0 means it was not charged. */
+    val waitingFare: Int = 0,
 ) {
-    val total: Int get() = distanceFare + timeFare + minimumTopUp
+    val total: Int get() = distanceFare + timeFare + minimumTopUp + waitingFare
 }
 
 object HistoryStore {
@@ -139,7 +141,7 @@ object HistoryStore {
                 val o = arr.getJSONObject(i)
                 Trip(
                     o.getLong("t"), o.getString("v"), o.getDouble("d"),
-                    o.getLong("dur"), o.getInt("df"), o.getInt("wf"), o.optInt("mf", 0), o.optLong("p", 0L),
+                    o.getLong("dur"), o.getInt("df"), o.getInt("wf"), o.optInt("mf", 0), o.optLong("p", 0L), o.optInt("pw", 0),
                 )
             }
         } catch (e: Exception) {
@@ -152,7 +154,7 @@ object HistoryStore {
         for (t in (listOf(trip) + load(ctx)).take(MAX_TRIPS)) {
             arr.put(
                 JSONObject().put("t", t.endedAtMs).put("v", t.vehicle).put("d", t.distanceM)
-                    .put("dur", t.durationMs).put("df", t.distanceFare).put("wf", t.timeFare).put("mf", t.minimumTopUp).put("p", t.pausedMs),
+                    .put("dur", t.durationMs).put("df", t.distanceFare).put("wf", t.timeFare).put("mf", t.minimumTopUp).put("p", t.pausedMs).put("pw", t.waitingFare),
             )
         }
         prefs(ctx).edit().putString("trips", arr.toString()).apply()
@@ -171,6 +173,8 @@ data class TripState(
     val pausedAtMs: Long? = null,
     /** All earlier pauses of this trip together. */
     val pausedTotalMs: Long = 0,
+    /** The driver chose to charge the paused time as waiting. */
+    val chargePaused: Boolean = false,
 ) {
     val paused: Boolean get() = pausedAtMs != null
 
@@ -200,6 +204,10 @@ object TripRepo {
         val s = _state.value
         if (!s.running || s.paused) return
         _state.value = s.copy(pausedAtMs = nowMs)
+    }
+
+    fun setChargePaused(on: Boolean) {
+        _state.value = _state.value.copy(chargePaused = on)
     }
 
     fun resume(nowMs: Long) {

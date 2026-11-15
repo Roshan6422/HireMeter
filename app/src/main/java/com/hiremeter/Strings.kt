@@ -40,6 +40,9 @@ class Strings(
     /** time paused so far */
     val pausedBanner: String,
     val pausedTime: String, val notifPaused: String,
+    val pausedCharged: String, val waitingFareLabel: String, val waitRateLabel: String,
+    /** waiting rate per minute */
+    val chargePausedLabel: String,
     val viewOnGoogle: String, val routeLink: String,
     val tuk: String, val bike: String, val mini: String, val flex: String, val car: String, val minivan: String, val van: String,
 ) {
@@ -86,6 +89,8 @@ private val SINHALA = Strings(
     pauseTrip = "මීටරය නවත්වන්න (Pause)", resumeTrip = "මීටරය ආයෙ පටන් ගන්න",
     pausedBanner = "⏸ මීටරය නවත්වලා · %s\nදුර සහ කාලය ගණන් වෙන්නේ නෑ. GPS එක off.",
     pausedTime = "නවත්වා තිබූ කාලය (ගාස්තු නැත)", notifPaused = "මීටරය නවත්වා ඇත (Pause)",
+    pausedCharged = "රැඳී සිටි කාලය (Pause)", waitingFareLabel = "රැඳී සිටීමට ගාස්තුව", waitRateLabel = "රැඳීම / විනාඩි (Pause)",
+    chargePausedLabel = "Pause කාලයට රැඳී සිටීමේ ගාස්තුව ගන්න · විනාඩියට %s",
     viewOnGoogle = "🗺️ Google Maps එකෙන් බලන්න", routeLink = "ගිය පාර:",
     tuk = "ත්‍රීවීල්", bike = "බයික්", mini = "මිනි කාර්", flex = "ෆ්ලෙක්ස්", car = "කාර්", minivan = "මිනි වෑන්", van = "වෑන්",
 )
@@ -122,6 +127,8 @@ private val TAMIL = Strings(
     pauseTrip = "மீட்டரை இடைநிறுத்து", resumeTrip = "மீட்டரைத் தொடர்",
     pausedBanner = "⏸ மீட்டர் இடைநிறுத்தப்பட்டுள்ளது · %s\nதூரமும் நேரமும் கணக்கிடப்படாது. GPS அணைக்கப்பட்டுள்ளது.",
     pausedTime = "இடைநிறுத்திய நேரம் (கட்டணம் இல்லை)", notifPaused = "மீட்டர் இடைநிறுத்தப்பட்டுள்ளது",
+    pausedCharged = "காத்திருந்த நேரம் (இடைநிறுத்தம்)", waitingFareLabel = "காத்திருப்புக் கட்டணம்", waitRateLabel = "காத்திருப்பு / நிமிடம்",
+    chargePausedLabel = "இடைநிறுத்த நேரத்திற்குக் காத்திருப்புக் கட்டணம் · நிமிடத்திற்கு %s",
     viewOnGoogle = "🗺️ Google Maps-இல் பார்க்க", routeLink = "சென்ற பாதை:",
     tuk = "முச்சக்கர வண்டி", bike = "பைக்", mini = "மினி கார்", flex = "ஃப்ளெக்ஸ்", car = "கார்", minivan = "மினி வேன்", van = "வேன்",
 )
@@ -158,6 +165,8 @@ private val ENGLISH = Strings(
     pauseTrip = "Pause meter", resumeTrip = "Resume meter",
     pausedBanner = "⏸ Meter paused · %s\nDistance and time are not counted. GPS is off.",
     pausedTime = "Paused (not charged)", notifPaused = "Meter paused",
+    pausedCharged = "Waited (paused)", waitingFareLabel = "Waiting fare", waitRateLabel = "Waiting / min (paused)",
+    chargePausedLabel = "Charge the paused time as waiting · %s per minute",
     viewOnGoogle = "🗺️ View on Google Maps", routeLink = "Route:",
     tuk = "Three-wheeler", bike = "Bike", mini = "Mini car", flex = "Flex", car = "Car", minivan = "Mini van", van = "Van",
 )

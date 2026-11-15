@@ -43,6 +43,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
@@ -108,7 +109,8 @@ fun billText(t: Trip, route: List<LatLon>) = buildString {
     appendLine("${s.vehicleLabel}: ${t.vehicle}")
     appendLine("${s.distance}: ${km(t.distanceM)}  →  ${rs(t.distanceFare)}")
     appendLine("${s.elapsed}: ${clock(t.durationMs)}  →  ${rs(t.timeFare)}")
-    if (t.pausedMs > 0) appendLine("${s.pausedTime}: ${clock(t.pausedMs)}")
+    if (t.pausedMs > 0) appendLine("${if (t.waitingFare > 0) s.pausedCharged else s.pausedTime}: ${clock(t.pausedMs)}")
+    if (t.waitingFare > 0) appendLine("${s.waitingFareLabel}: ${rs(t.waitingFare)}")
     if (t.minimumTopUp > 0) appendLine("${s.minFareTopUp}: ${rs(t.minimumTopUp)}")
     append("${s.total}: ${rs(t.total)}")
     googleMapsLink(route)?.let { append("\n\n${s.routeLink}\n$it") }
@@ -210,7 +212,8 @@ fun MeterScreen(
     }
 
     val elapsedMs = if (trip.running) trip.activeMs(now) else 0L
-    val fare = calculateFare(trip.distanceM, elapsedMs, vehicle.rates)
+    val chargedPauseMs = if (trip.running && trip.chargePaused) trip.pausedMs(now) else 0L
+    val fare = calculateFare(trip.distanceM, elapsedMs, vehicle.rates, chargedPauseMs)
     val showTrip = trip.running
 
     Column(
@@ -252,6 +255,9 @@ fun MeterScreen(
                         s.fareSplit.format(rs(fare.distanceFare), rs(fare.timeFare)),
                         color = Color(0xFFD7F2E6), fontSize = 13.sp,
                     )
+                    if (fare.waitingFare > 0) {
+                        Text("+ ${s.waitingFareLabel} ${rs(fare.waitingFare)}", color = Color(0xFFD7F2E6), fontSize = 13.sp)
+                    }
                     if (fare.minimumTopUp > 0) {
                         Text(s.minFareLine.format(rsRate(vehicle.rates.minFare)), color = Color(0xFFD7F2E6), fontSize = 13.sp)
                     }
@@ -273,6 +279,21 @@ fun MeterScreen(
             )
         } else if (trip.running && !trip.hasGps) {
             Text(s.gpsSearching, color = Red, modifier = Modifier.padding(top = 12.dp), textAlign = TextAlign.Center)
+        }
+
+        if (trip.running && (trip.paused || trip.pausedTotalMs > 0)) {
+            // Up-and-down hires: the driver decides whether the time away is charged as waiting.
+            Row(
+                Modifier.fillMaxWidth().padding(top = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    s.chargePausedLabel.format(rsRate(vehicle.rates.waitPerMin)),
+                    fontSize = 14.sp, modifier = Modifier.weight(1f),
+                )
+                Switch(checked = trip.chargePaused, onCheckedChange = { TripRepo.setChargePaused(it) })
+            }
         }
 
         Spacer(Modifier.height(24.dp))
@@ -304,7 +325,8 @@ fun MeterScreen(
                 onClick = {
                     val endMs = System.currentTimeMillis()
                     val tripMs = trip.activeMs(endMs)
-                    val endFare = calculateFare(trip.distanceM, tripMs, vehicle.rates)
+                    val pausedMs = trip.pausedMs(endMs)
+                    val endFare = calculateFare(trip.distanceM, tripMs, vehicle.rates, if (trip.chargePaused) pausedMs else 0L)
                     val done = Trip(
                         endedAtMs = endMs,
                         vehicle = s.vehicleName(vehicle.id),
@@ -313,7 +335,8 @@ fun MeterScreen(
                         distanceFare = endFare.distanceFare,
                         timeFare = endFare.timeFare,
                         minimumTopUp = endFare.minimumTopUp,
-                        pausedMs = trip.pausedMs(endMs),
+                        pausedMs = pausedMs,
+                        waitingFare = endFare.waitingFare,
                     )
                     finishedRoute = TripRepo.routeSnapshot()
                     finishedBreaks = TripRepo.routeBreaksSnapshot()
@@ -354,10 +377,11 @@ fun MeterScreen(
                     BillRow(s.date, SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(t.endedAtMs)))
                     BillRow(s.distance, km(t.distanceM))
                     BillRow(s.elapsed, clock(t.durationMs))
-                    if (t.pausedMs > 0) BillRow(s.pausedTime, clock(t.pausedMs))
+                    if (t.pausedMs > 0) BillRow(if (t.waitingFare > 0) s.pausedCharged else s.pausedTime, clock(t.pausedMs))
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     BillRow(s.distanceFare, rs(t.distanceFare))
                     BillRow(s.timeFare, rs(t.timeFare))
+                    if (t.waitingFare > 0) BillRow(s.waitingFareLabel, rs(t.waitingFare))
                     if (t.minimumTopUp > 0) BillRow(s.minFareTopUp, rs(t.minimumTopUp))
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -491,8 +515,13 @@ fun RatesScreen(
                             onVehicle(v.copy(rates = v.rates.copy(perMin = it)))
                         }
                     }
-                    NumField(s.minFareLabel, v.rates.minFare, !locked, Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                        onVehicle(v.copy(rates = v.rates.copy(minFare = it)))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
+                        NumField(s.minFareLabel, v.rates.minFare, !locked, Modifier.weight(1f)) {
+                            onVehicle(v.copy(rates = v.rates.copy(minFare = it)))
+                        }
+                        NumField(s.waitRateLabel, v.rates.waitPerMin, !locked, Modifier.weight(1f)) {
+                            onVehicle(v.copy(rates = v.rates.copy(waitPerMin = it)))
+                        }
                     }
                 }
             }
