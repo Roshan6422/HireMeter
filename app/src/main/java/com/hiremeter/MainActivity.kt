@@ -109,7 +109,8 @@ fun billText(t: Trip, route: List<LatLon>) = buildString {
     appendLine("${s.vehicleLabel}: ${t.vehicle}")
     appendLine("${s.distance}: ${km(t.distanceM)}  →  ${rs(t.distanceFare)}")
     appendLine("${s.elapsed}: ${clock(t.durationMs)}  →  ${rs(t.timeFare)}")
-    if (t.pausedMs > 0) appendLine("${if (t.waitingFare > 0) s.pausedCharged else s.pausedTime}: ${clock(t.pausedMs)}")
+    // The customer's copy never mentions pausing; charged waiting shows as plain waiting time.
+    if (t.waitingFare > 0) appendLine("${s.waitedLabel}: ${clock(t.pausedMs)}")
     if (t.waitingFare > 0) appendLine("${s.waitingFareLabel}: ${rs(t.waitingFare)}")
     if (t.minimumTopUp > 0) appendLine("${s.minFareTopUp}: ${rs(t.minimumTopUp)}")
     append("${s.total}: ${rs(t.total)}")
