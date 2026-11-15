@@ -120,6 +120,65 @@ class TripTest {
         assertEquals(60_000L, s.pausedMs(100_000))
     }
 
+    private class Box : TripStorage {
+        var json: String? = null
+        override fun read() = json
+        override fun write(json: String?) { this.json = json }
+    }
+
+    private val metre = 1.0 / 111_195.0
+    private fun at(metres: Double, timeMs: Long) = Fix(6.85 + metres * metre, 79.95, 5f, 10.0, timeMs)
+
+    @Test fun aKilledPausedTripIsCarriedOnWhereItWas() {
+        val box = Box()
+        TripRepo.init(box)
+        TripRepo.start(1000)
+        for (i in 0 until 10) TripRepo.onFix(at(i * 100.0, i * 1000L))
+        TripRepo.pause(70_000)
+        TripRepo.setChargePaused(true)
+        val before = TripRepo.state.value
+        TripRepo.stop() // the app is killed
+
+        assertEquals(true, TripRepo.restoreIfNeeded())
+        val after = TripRepo.state.value
+        assertEquals(before.startedAtMs, after.startedAtMs)
+        assertEquals(before.distanceM, after.distanceM, 0.01)
+        assertEquals(before.pausedAtMs, after.pausedAtMs)
+        assertEquals(true, after.chargePaused)
+        assertEquals(10, TripRepo.routeSnapshot().size)
+
+        // Resumed after the phone restarted: its GPS clock starts again from zero.
+        TripRepo.resume(100_000)
+        for (i in 0..10) TripRepo.onFix(at(5000.0 + i * 100, i * 1000L))
+        assertEquals(before.distanceM + 1000, TripRepo.state.value.distanceM, 5.0)
+
+        TripRepo.finish()
+        assertEquals(null, box.json)
+        assertEquals(false, TripRepo.restoreIfNeeded())
+    }
+
+    @Test fun afterARestartDistanceCarriesOnFromTheLastPlace() {
+        val box = Box()
+        TripRepo.init(box)
+        TripRepo.start(0)
+        for (i in 0 until 10) TripRepo.onFix(at(i * 100.0, 500_000 + i * 1000L))
+        TripRepo.stop()
+        TripRepo.restoreIfNeeded()
+        // First reading after the restart (clock back near zero), 600 m further on and moving.
+        TripRepo.onFix(at(1500.0, 2000))
+        val d = TripRepo.state.value.distanceM
+        TripRepo.finish()
+        assertEquals(1500.0, d, 5.0)
+    }
+
+    @Test fun nothingIsRestoredWhenATripIsAlreadyRunning() {
+        val box = Box()
+        TripRepo.init(box)
+        TripRepo.start(0)
+        assertEquals(false, TripRepo.restoreIfNeeded())
+        TripRepo.finish()
+    }
+
     @Test fun pausedTimeKeepsGrowingUntilResumed() {
         val s = TripState(running = true, startedAtMs = 0, pausedAtMs = 600_000, pausedTotalMs = 120_000)
         assertEquals(120_000L + 300_000, s.pausedMs(900_000))

@@ -149,6 +149,23 @@ class TripTracker {
     /** Where in [route] a new piece starts after a pause; the map draws no line across the gap. */
     val routeBreaks: List<Int> get() = breaks
 
+    /** The position distance is measured from, for saving the trip. */
+    val lastPlace: LatLon? get() = last?.let { LatLon(it.lat, it.lon) }
+
+    /**
+     * Carries on a saved trip after the app was stopped or the phone restarted. The saved reading's
+     * clock means nothing any more (it restarts with the phone), so the next reading is taken as
+     * long after it; distance carries on from [lastPlace] once the vehicle is seen moving.
+     */
+    fun restore(distanceM: Double, route: List<LatLon>, routeBreaks: List<Int>, lastPlace: LatLon?) {
+        this.distanceM = distanceM
+        points.clear()
+        points.addAll(route)
+        breaks.clear()
+        breaks.addAll(routeBreaks)
+        last = lastPlace?.let { Fix(it.lat, it.lon, 0f, null, Long.MIN_VALUE / 2) }
+    }
+
     /**
      * The meter was paused and is running again, maybe somewhere else entirely. The next reading
      * starts a new piece of route and adds no distance from where the last piece ended.

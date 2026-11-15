@@ -23,6 +23,11 @@ class MeterService : Service(), LocationListener {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        TripRepo.init(this)
+    }
+
     @SuppressLint("MissingPermission") // MainActivity only starts the service after the permission is granted
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -39,19 +44,46 @@ class MeterService : Service(), LocationListener {
                 listen(lm)
                 showNotification(paused = false)
             }
-            else -> {
-                val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
-                ServiceCompat.startForeground(this, 1, notification(paused = false), type)
+            ACTION_START -> {
+                if (!goForeground(paused = false)) return START_NOT_STICKY
                 TripRepo.start(System.currentTimeMillis())
                 listen(lm)
             }
+            else -> {
+                // Started again by Android after the app was killed, or by the app after the phone
+                // restarted: carry on the saved trip.
+                TripRepo.restoreIfNeeded()
+                val s = TripRepo.state.value
+                if (!s.running || !goForeground(s.paused)) {
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                if (!s.paused) listen(lm)
+            }
         }
-        return START_NOT_STICKY
+        // If Android kills the app during a trip, it starts this service again.
+        return START_STICKY
+    }
+
+    /** False if Android does not allow it right now; the saved trip is carried on when the app opens. */
+    private fun goForeground(paused: Boolean): Boolean {
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
+        return try {
+            ServiceCompat.startForeground(this, 1, notification(paused), type)
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 
     @SuppressLint("MissingPermission") // MainActivity only starts the service after the permission is granted
     private fun listen(lm: LocationManager) {
-        lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, this, Looper.getMainLooper())
+        // The permission can have been taken away while the app was stopped.
+        try {
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, this, Looper.getMainLooper())
+        } catch (e: SecurityException) {
+            return
+        }
         // The network position works indoors, where GPS often finds nothing. It only marks the place on the map.
         listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER)
             .firstNotNullOfOrNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
@@ -118,5 +150,6 @@ class MeterService : Service(), LocationListener {
         private const val CHANNEL = "meter"
         const val ACTION_PAUSE = "com.hiremeter.PAUSE"
         const val ACTION_RESUME = "com.hiremeter.RESUME"
+        const val ACTION_START = "com.hiremeter.START"
     }
 }

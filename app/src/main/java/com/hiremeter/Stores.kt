@@ -185,18 +185,94 @@ data class TripState(
     fun activeMs(nowMs: Long): Long = maxOf(0L, nowMs - startedAtMs - pausedMs(nowMs))
 }
 
-/** The trip in progress. Filled by [MeterService], shown by the screen. */
+/** Where the trip in progress is kept on the phone. Null clears it. */
+interface TripStorage {
+    fun read(): String?
+    fun write(json: String?)
+}
+
+/**
+ * The trip in progress. Filled by [MeterService], shown by the screen. It is saved to the phone as
+ * it goes, so a trip survives the app being killed or the phone restarting: [restoreIfNeeded]
+ * carries it on.
+ */
 object TripRepo {
     private val _state = MutableStateFlow(TripState())
     val state: StateFlow<TripState> = _state
     private var tracker = TripTracker()
     /** Where the phone roughly is, from WiFi / mobile network. Only for the bill's map, never for the fare. */
     @Volatile private var roughPlace: LatLon? = null
+    private var storage: TripStorage? = null
+    private var fixesSinceSave = 0
+
+    fun init(storage: TripStorage) {
+        this.storage = storage
+    }
+
+    fun init(ctx: Context) {
+        if (storage != null) return
+        val prefs = ctx.applicationContext.getSharedPreferences("trip", Context.MODE_PRIVATE)
+        init(object : TripStorage {
+            override fun read() = prefs.getString("trip", null)
+            override fun write(json: String?) {
+                prefs.edit().apply { if (json == null) remove("trip") else putString("trip", json) }.apply()
+            }
+        })
+    }
+
+    private fun save() {
+        val st = storage ?: return
+        val s = _state.value
+        if (!s.running) return
+        val route = JSONArray()
+        for (p in tracker.route) route.put(p.lat).put(p.lon)
+        val o = JSONObject()
+            .put("start", s.startedAtMs).put("dist", s.distanceM)
+            .put("pausedAt", s.pausedAtMs ?: -1L).put("pausedTotal", s.pausedTotalMs).put("charge", s.chargePaused)
+            .put("route", route).put("breaks", JSONArray(tracker.routeBreaks))
+        tracker.lastPlace?.let { o.put("lastLat", it.lat).put("lastLon", it.lon) }
+        st.write(o.toString())
+        fixesSinceSave = 0
+    }
+
+    /**
+     * When a saved trip is running but this one is not (the app was killed, the phone restarted),
+     * carries the saved one on. True if it did; the caller then starts the meter service again.
+     */
+    fun restoreIfNeeded(): Boolean {
+        if (_state.value.running) return false
+        val json = storage?.read() ?: return false
+        return try {
+            val o = JSONObject(json)
+            val flat = o.getJSONArray("route")
+            val route = (0 until flat.length() / 2).map { LatLon(flat.getDouble(2 * it), flat.getDouble(2 * it + 1)) }
+            val br = o.getJSONArray("breaks")
+            val last = if (o.has("lastLat")) LatLon(o.getDouble("lastLat"), o.getDouble("lastLon")) else null
+            tracker = TripTracker().apply {
+                restore(o.getDouble("dist"), route, (0 until br.length()).map { br.getInt(it) }, last)
+            }
+            roughPlace = null
+            val pausedAt = o.getLong("pausedAt")
+            _state.value = TripState(
+                running = true,
+                startedAtMs = o.getLong("start"),
+                distanceM = o.getDouble("dist"),
+                pausedAtMs = if (pausedAt >= 0) pausedAt else null,
+                pausedTotalMs = o.getLong("pausedTotal"),
+                chargePaused = o.getBoolean("charge"),
+            )
+            true
+        } catch (e: Exception) {
+            storage?.write(null)
+            false
+        }
+    }
 
     fun start(nowMs: Long) {
         tracker = TripTracker()
         roughPlace = null
         _state.value = TripState(running = true, startedAtMs = nowMs)
+        save()
     }
 
     /** Stops counting distance and time until [resume], e.g. while the driver does other hires. */
@@ -204,10 +280,12 @@ object TripRepo {
         val s = _state.value
         if (!s.running || s.paused) return
         _state.value = s.copy(pausedAtMs = nowMs)
+        save()
     }
 
     fun setChargePaused(on: Boolean) {
         _state.value = _state.value.copy(chargePaused = on)
+        save()
     }
 
     fun resume(nowMs: Long) {
@@ -215,6 +293,7 @@ object TripRepo {
         val at = s.pausedAtMs ?: return
         tracker.newPiece()
         _state.value = s.copy(pausedAtMs = null, pausedTotalMs = s.pausedTotalMs + maxOf(0L, nowMs - at), hasGps = false)
+        save()
     }
 
     fun onFix(fix: Fix) {
@@ -224,6 +303,8 @@ object TripRepo {
             distanceM = tracker.distanceM,
             hasGps = _state.value.hasGps || fix.accuracyM <= TripTracker.MAX_ACCURACY_M,
         )
+        // Saved every few readings: at most a few seconds are lost if the app is killed.
+        if (++fixesSinceSave >= 5) save()
     }
 
     fun onRoughPlace(place: LatLon) {
@@ -239,8 +320,14 @@ object TripRepo {
     /** Where the route snapshot's pieces start after each pause. */
     fun routeBreaksSnapshot(): List<Int> = tracker.routeBreaks.toList()
 
-    /** Keeps the totals so the screen can still show the finished trip. */
+    /** The meter stopped (the service went away). The saved trip stays, to be carried on. */
     fun stop() {
         _state.value = _state.value.copy(running = false)
+    }
+
+    /** The driver ended the trip: nothing is left to carry on. */
+    fun finish() {
+        _state.value = _state.value.copy(running = false)
+        storage?.write(null)
     }
 }

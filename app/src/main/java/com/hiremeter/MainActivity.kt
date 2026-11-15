@@ -9,6 +9,7 @@ import android.net.Uri
 import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -84,8 +85,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Tr.load(this)
+        TripRepo.init(this)
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(primary = Green)) { App() }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // The app was killed or the phone restarted during a trip: carry on the saved one.
+        if (TripRepo.restoreIfNeeded()) {
+            ContextCompat.startForegroundService(this, Intent(this, MeterService::class.java))
+            Toast.makeText(this, Tr.s.tripRecovered, Toast.LENGTH_LONG).show()
         }
     }
 }
@@ -179,7 +190,7 @@ private fun startTrip(ctx: Context) {
         ctx.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         return
     }
-    ContextCompat.startForegroundService(ctx, Intent(ctx, MeterService::class.java))
+    ContextCompat.startForegroundService(ctx, Intent(ctx, MeterService::class.java).setAction(MeterService.ACTION_START))
 }
 
 @Composable
@@ -197,6 +208,7 @@ fun MeterScreen(
     var finishedRoute by remember { mutableStateOf<List<LatLon>>(emptyList()) }
     var finishedBreaks by remember { mutableStateOf<List<Int>>(emptyList()) }
     var payFor by remember { mutableStateOf<Trip?>(null) }
+    var confirmEnd by remember { mutableStateOf(false) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(trip.running) {
         while (trip.running) {
@@ -216,6 +228,31 @@ fun MeterScreen(
     val chargedPauseMs = if (trip.running && trip.chargePaused) trip.pausedMs(now) else 0L
     val fare = calculateFare(trip.distanceM, elapsedMs, vehicle.rates, chargedPauseMs)
     val showTrip = trip.running
+
+    val endTrip = {
+        val endMs = System.currentTimeMillis()
+        val tripMs = trip.activeMs(endMs)
+        val pausedMs = trip.pausedMs(endMs)
+        val endFare = calculateFare(trip.distanceM, tripMs, vehicle.rates, if (trip.chargePaused) pausedMs else 0L)
+        val done = Trip(
+            endedAtMs = endMs,
+            vehicle = s.vehicleName(vehicle.id),
+            distanceM = trip.distanceM,
+            durationMs = tripMs,
+            distanceFare = endFare.distanceFare,
+            timeFare = endFare.timeFare,
+            minimumTopUp = endFare.minimumTopUp,
+            pausedMs = pausedMs,
+            waitingFare = endFare.waitingFare,
+        )
+        finishedRoute = TripRepo.routeSnapshot()
+        finishedBreaks = TripRepo.routeBreaksSnapshot()
+        TripRepo.finish()
+        ctx.stopService(Intent(ctx, MeterService::class.java))
+        HistoryStore.add(ctx, done)
+        onTripSaved()
+        finished = done
+    }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -323,29 +360,7 @@ fun MeterScreen(
             ) { Text(if (trip.paused) "▶  ${s.resumeTrip}" else "⏸  ${s.pauseTrip}", fontSize = 18.sp) }
             Spacer(Modifier.height(10.dp))
             Button(
-                onClick = {
-                    val endMs = System.currentTimeMillis()
-                    val tripMs = trip.activeMs(endMs)
-                    val pausedMs = trip.pausedMs(endMs)
-                    val endFare = calculateFare(trip.distanceM, tripMs, vehicle.rates, if (trip.chargePaused) pausedMs else 0L)
-                    val done = Trip(
-                        endedAtMs = endMs,
-                        vehicle = s.vehicleName(vehicle.id),
-                        distanceM = trip.distanceM,
-                        durationMs = tripMs,
-                        distanceFare = endFare.distanceFare,
-                        timeFare = endFare.timeFare,
-                        minimumTopUp = endFare.minimumTopUp,
-                        pausedMs = pausedMs,
-                        waitingFare = endFare.waitingFare,
-                    )
-                    finishedRoute = TripRepo.routeSnapshot()
-                    finishedBreaks = TripRepo.routeBreaksSnapshot()
-                    ctx.stopService(Intent(ctx, MeterService::class.java))
-                    HistoryStore.add(ctx, done)
-                    onTripSaved()
-                    finished = done
-                },
+                onClick = { confirmEnd = true },
                 colors = ButtonDefaults.buttonColors(containerColor = Red),
                 modifier = Modifier.fillMaxWidth().height(64.dp),
             ) { Text("■  ${s.endTrip}", fontSize = 20.sp) }
@@ -353,6 +368,19 @@ fun MeterScreen(
         Text(
             s.meterNote,
             fontSize = 12.sp, color = Color.Gray, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp),
+        )
+    }
+
+    if (confirmEnd) {
+        // Ending by mistake would lose the hire, so it is asked once more.
+        AlertDialog(
+            onDismissRequest = { confirmEnd = false },
+            title = { Text(s.endConfirmTitle) },
+            text = { Text(rs(fare.total), fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Green) },
+            confirmButton = {
+                TextButton(onClick = { confirmEnd = false; endTrip() }) { Text(s.endTrip, color = Red) }
+            },
+            dismissButton = { TextButton(onClick = { confirmEnd = false }) { Text(s.cancel) } },
         )
     }
 
@@ -548,6 +576,39 @@ fun SettingsScreen() {
             }
         }
         PaymentSettings()
+        BatterySettings()
+    }
+}
+
+/** Battery saving can stop the meter during a trip; this takes HireMeter off its limits. */
+@Composable
+private fun BatterySettings() {
+    val ctx = LocalContext.current
+    val s = Tr.s
+    val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+    var free by remember { mutableStateOf(pm.isIgnoringBatteryOptimizations(ctx.packageName)) }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        free = pm.isIgnoringBatteryOptimizations(ctx.packageName)
+    }
+    Card(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+        Column(Modifier.padding(12.dp)) {
+            Text(s.batteryTitle, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text(s.batteryHint, fontSize = 12.sp, color = Color.Gray)
+            if (free) {
+                Text(s.batteryDone, color = Green, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+            } else {
+                Button(
+                    onClick = {
+                        try {
+                            ask.launch(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + ctx.packageName)))
+                        } catch (e: Exception) {
+                            ask.launch(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        }
+                    },
+                    modifier = Modifier.padding(top = 8.dp),
+                ) { Text(s.batteryButton) }
+            }
+        }
     }
 }
 
