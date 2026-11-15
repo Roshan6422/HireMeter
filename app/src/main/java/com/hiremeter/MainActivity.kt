@@ -73,6 +73,7 @@ import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.max
 
 private val Green = Color(0xFF0B6E4F)
 private val Red = Color(0xFFC62828)
@@ -105,9 +106,8 @@ fun billText(t: Trip, route: List<LatLon>) = buildString {
     appendLine(SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(t.endedAtMs)))
     appendLine("${s.vehicleLabel}: ${t.vehicle}")
     appendLine("${s.distance}: ${km(t.distanceM)}  →  ${rs(t.distanceFare)}")
-    appendLine("${s.waiting}: ${clock(t.waitingMs)}  →  ${rs(t.waitingFare)}")
+    appendLine("${s.elapsed}: ${clock(t.durationMs)}  →  ${rs(t.timeFare)}")
     if (t.minimumTopUp > 0) appendLine("${s.minFareTopUp}: ${rs(t.minimumTopUp)}")
-    appendLine("${s.elapsed}: ${clock(t.durationMs)}")
     append("${s.total}: ${rs(t.total)}")
     googleMapsLink(route)?.let { append("\n\n${s.routeLink}\n$it") }
 }
@@ -118,7 +118,6 @@ fun App() {
     val s = Tr.s
     var tab by remember { mutableStateOf(0) }
     var vehicles by remember { mutableStateOf(RatesStore.load(ctx)) }
-    var freeWait by remember { mutableStateOf(RatesStore.freeWaitMin(ctx)) }
     var selectedId by remember { mutableStateOf(RatesStore.selectedId(ctx)) }
     var history by remember { mutableStateOf(HistoryStore.load(ctx)) }
     val trip by TripRepo.state.collectAsState()
@@ -143,19 +142,16 @@ fun App() {
                     trip = trip,
                     vehicles = vehicles,
                     selectedId = selectedId,
-                    freeWait = freeWait,
                     onSelect = { selectedId = it; RatesStore.setSelectedId(ctx, it) },
                     onTripSaved = { history = HistoryStore.load(ctx) },
                 )
                 1 -> RatesScreen(
                     vehicles = vehicles,
-                    freeWait = freeWait,
                     locked = trip.running,
                     onVehicle = { v ->
                         vehicles = vehicles.map { if (it.id == v.id) v else it }
                         RatesStore.save(ctx, vehicles)
                     },
-                    onFreeWait = { freeWait = it; RatesStore.setFreeWaitMin(ctx, it) },
                     onAdjustAll = { percent ->
                         vehicles = vehicles.map { it.copy(rates = adjustRates(it.rates, percent)) }
                         RatesStore.save(ctx, vehicles)
@@ -186,7 +182,6 @@ fun MeterScreen(
     trip: TripState,
     vehicles: List<Vehicle>,
     selectedId: String,
-    freeWait: Double,
     onSelect: (String) -> Unit,
     onTripSaved: () -> Unit,
 ) {
@@ -210,7 +205,8 @@ fun MeterScreen(
         else Toast.makeText(ctx, Tr.s.noPermission, Toast.LENGTH_LONG).show()
     }
 
-    val fare = calculateFare(trip.distanceM, trip.waitingMs, vehicle.rates, freeWait)
+    val elapsedMs = if (trip.running) max(0L, now - trip.startedAtMs) else 0L
+    val fare = calculateFare(trip.distanceM, elapsedMs, vehicle.rates)
     val showTrip = trip.running
 
     Column(
@@ -228,7 +224,7 @@ fun MeterScreen(
             }
         }
         Text(
-            s.rateLine.format(rsRate(vehicle.rates.firstKm), rsRate(vehicle.rates.perKm), rsRate(vehicle.rates.waitPerMin)),
+            s.rateLine.format(rsRate(vehicle.rates.firstKm), rsRate(vehicle.rates.perKm), rsRate(vehicle.rates.perMin)),
             fontSize = 12.sp, color = Color.Gray, modifier = Modifier.padding(top = 4.dp),
         )
         if (vehicle.rates.minFare > 0) {
@@ -249,7 +245,7 @@ fun MeterScreen(
                 )
                 if (showTrip) {
                     Text(
-                        s.fareSplit.format(rs(fare.distanceFare), rs(fare.waitingFare)),
+                        s.fareSplit.format(rs(fare.distanceFare), rs(fare.timeFare)),
                         color = Color(0xFFD7F2E6), fontSize = 13.sp,
                     )
                     if (fare.minimumTopUp > 0) {
@@ -262,8 +258,7 @@ fun MeterScreen(
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Stat(s.distance, if (showTrip) km(trip.distanceM) else "0.00 km", Modifier.weight(1f))
-            Stat(s.waiting, if (showTrip) clock(trip.waitingMs) else "00:00", Modifier.weight(1f))
-            Stat(s.elapsed, if (showTrip) clock(now - trip.startedAtMs) else "00:00", Modifier.weight(1f))
+            Stat(s.elapsed, clock(elapsedMs), Modifier.weight(1f))
         }
 
         if (trip.running && !trip.hasGps) {
@@ -288,15 +283,17 @@ fun MeterScreen(
         } else {
             Button(
                 onClick = {
+                    val endMs = System.currentTimeMillis()
+                    val tripMs = max(0L, endMs - trip.startedAtMs)
+                    val endFare = calculateFare(trip.distanceM, tripMs, vehicle.rates)
                     val done = Trip(
-                        endedAtMs = System.currentTimeMillis(),
+                        endedAtMs = endMs,
                         vehicle = s.vehicleName(vehicle.id),
                         distanceM = trip.distanceM,
-                        waitingMs = trip.waitingMs,
-                        durationMs = System.currentTimeMillis() - trip.startedAtMs,
-                        distanceFare = fare.distanceFare,
-                        waitingFare = fare.waitingFare,
-                        minimumTopUp = fare.minimumTopUp,
+                        durationMs = tripMs,
+                        distanceFare = endFare.distanceFare,
+                        timeFare = endFare.timeFare,
+                        minimumTopUp = endFare.minimumTopUp,
                     )
                     finishedRoute = TripRepo.routeSnapshot()
                     ctx.stopService(Intent(ctx, MeterService::class.java))
@@ -309,7 +306,7 @@ fun MeterScreen(
             ) { Text("■  ${s.endTrip}", fontSize = 20.sp) }
         }
         Text(
-            s.meterNote.format(plain(freeWait)),
+            s.meterNote,
             fontSize = 12.sp, color = Color.Gray, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp),
         )
     }
@@ -334,11 +331,10 @@ fun MeterScreen(
                     BillRow(s.vehicleLabel, t.vehicle)
                     BillRow(s.date, SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(t.endedAtMs)))
                     BillRow(s.distance, km(t.distanceM))
-                    BillRow(s.waiting, clock(t.waitingMs))
                     BillRow(s.elapsed, clock(t.durationMs))
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     BillRow(s.distanceFare, rs(t.distanceFare))
-                    BillRow(s.waitingFare, rs(t.waitingFare))
+                    BillRow(s.timeFare, rs(t.timeFare))
                     if (t.minimumTopUp > 0) BillRow(s.minFareTopUp, rs(t.minimumTopUp))
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -405,10 +401,8 @@ private fun Stat(label: String, value: String, modifier: Modifier = Modifier) {
 @Composable
 fun RatesScreen(
     vehicles: List<Vehicle>,
-    freeWait: Double,
     locked: Boolean,
     onVehicle: (Vehicle) -> Unit,
-    onFreeWait: (Double) -> Unit,
     onAdjustAll: (Double) -> Unit,
 ) {
     val s = Tr.s
@@ -459,7 +453,6 @@ fun RatesScreen(
             }
         }
         Spacer(Modifier.height(8.dp))
-        NumField(s.freeWaitLabel, freeWait, !locked, Modifier.fillMaxWidth(), onFreeWait)
         for (v in vehicles) {
             Card(Modifier.fillMaxWidth().padding(top = 12.dp)) {
                 Column(Modifier.padding(12.dp)) {
@@ -471,8 +464,8 @@ fun RatesScreen(
                         NumField(s.nextKm, v.rates.perKm, !locked, Modifier.weight(1f)) {
                             onVehicle(v.copy(rates = v.rates.copy(perKm = it)))
                         }
-                        NumField(s.waitPerMin, v.rates.waitPerMin, !locked, Modifier.weight(1f)) {
-                            onVehicle(v.copy(rates = v.rates.copy(waitPerMin = it)))
+                        NumField(s.perMinLabel, v.rates.perMin, !locked, Modifier.weight(1f)) {
+                            onVehicle(v.copy(rates = v.rates.copy(perMin = it)))
                         }
                     }
                     NumField(s.minFareLabel, v.rates.minFare, !locked, Modifier.fillMaxWidth().padding(top = 4.dp)) {
@@ -613,7 +606,7 @@ fun HistoryScreen(history: List<Trip>, onClear: () -> Unit) {
                                 SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(t.endedAtMs)) + " · " + t.vehicle,
                                 fontSize = 12.sp, color = Color.Gray,
                             )
-                            Text("${km(t.distanceM)} · ${s.waiting} ${clock(t.waitingMs)}")
+                            Text("${km(t.distanceM)} · ${clock(t.durationMs)}")
                         }
                         Text(rs(t.total), fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     }

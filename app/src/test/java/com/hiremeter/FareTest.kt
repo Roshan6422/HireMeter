@@ -4,50 +4,57 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class FareTest {
-    private val tuk = Rates(firstKm = 110.0, perKm = 90.0, waitPerMin = 5.0)
+    private val tuk = Rates(firstKm = 110.0, perKm = 90.0, perMin = 2.0)
 
     @Test fun shortTripCostsFirstKm() {
-        assertEquals(FareBreakdown(110, 0), calculateFare(400.0, 0, tuk, 3.0))
+        assertEquals(FareBreakdown(110, 0), calculateFare(400.0, 0, tuk))
     }
 
     @Test fun laterKmsAreChargedByTheMetre() {
         // 1 km + 4.5 km
-        assertEquals(110 + 405, calculateFare(5500.0, 0, tuk, 3.0).distanceFare)
+        assertEquals(110 + 405, calculateFare(5500.0, 0, tuk).distanceFare)
     }
 
-    @Test fun waitingIsFreeAtFirstThenCharged() {
-        assertEquals(0, calculateFare(0.0, 3 * 60_000L, tuk, 3.0).waitingFare)
-        assertEquals(35, calculateFare(0.0, 10 * 60_000L, tuk, 3.0).waitingFare)
+    @Test fun everyMinuteOfTheTripIsCharged() {
+        // No free minutes: 10 minutes at Rs. 2, 90 seconds at Rs. 2.
+        assertEquals(20, calculateFare(0.0, 10 * 60_000L, tuk).timeFare)
+        assertEquals(3, calculateFare(0.0, 90_000L, tuk).timeFare)
+    }
+
+    @Test fun distanceAndTimeAreBothCharged() {
+        // 5.5 km in 20 minutes: 515 for the distance + 40 for the time.
+        assertEquals(FareBreakdown(515, 40), calculateFare(5500.0, 20 * 60_000L, tuk))
+        assertEquals(555, calculateFare(5500.0, 20 * 60_000L, tuk).total)
     }
 
     @Test fun shortTripIsRaisedToTheMinimumFare() {
         val withMin = tuk.copy(minFare = 150.0)
-        assertEquals(FareBreakdown(110, 0, 40), calculateFare(400.0, 0, withMin, 3.0))
-        assertEquals(150, calculateFare(400.0, 0, withMin, 3.0).total)
+        assertEquals(FareBreakdown(110, 0, 40), calculateFare(400.0, 0, withMin))
+        assertEquals(150, calculateFare(400.0, 0, withMin).total)
     }
 
     @Test fun minimumFareAddsNothingOnceTheTripCostsMore() {
         val withMin = tuk.copy(minFare = 150.0)
-        assertEquals(FareBreakdown(515, 0, 0), calculateFare(5500.0, 0, withMin, 3.0))
-        // Waiting counts towards the minimum too: 110 + 35 = 145, so 5 is added.
-        assertEquals(FareBreakdown(110, 35, 5), calculateFare(400.0, 10 * 60_000L, withMin, 3.0))
+        assertEquals(FareBreakdown(515, 0, 0), calculateFare(5500.0, 0, withMin))
+        // Time counts towards the minimum too: 110 + 30 = 140, so 10 is added.
+        assertEquals(FareBreakdown(110, 30, 10), calculateFare(400.0, 15 * 60_000L, withMin))
     }
 
     @Test fun allRatesMoveByFivePercentToRoundAmounts() {
-        val r = Rates(firstKm = 200.0, perKm = 100.0, waitPerMin = 5.0)
+        val r = Rates(firstKm = 200.0, perKm = 100.0, perMin = 5.0)
         assertEquals(Rates(210.0, 105.0, 5.5), adjustRates(r, 5.0))
         assertEquals(Rates(190.0, 95.0, 4.5), adjustRates(r, -5.0))
     }
 
     @Test fun anyPercentageWorks() {
-        val r = Rates(firstKm = 200.0, perKm = 100.0, waitPerMin = 5.0, minFare = 300.0)
+        val r = Rates(firstKm = 200.0, perKm = 100.0, perMin = 5.0, minFare = 300.0)
         assertEquals(Rates(204.0, 102.0, 5.5, 306.0), adjustRates(r, 2.0))
         assertEquals(Rates(194.0, 97.0, 4.5, 291.0), adjustRates(r, -3.0))
     }
 
     @Test fun smallRatesStillMoveAndNeverGoBelowZero() {
-        assertEquals(1.0, adjustRates(Rates(0.0, 0.0, 0.5), 5.0).waitPerMin, 0.0)
-        assertEquals(0.0, adjustRates(Rates(0.0, 0.0, 0.5), -5.0).waitPerMin, 0.0)
+        assertEquals(1.0, adjustRates(Rates(0.0, 0.0, 0.5), 5.0).perMin, 0.0)
+        assertEquals(0.0, adjustRates(Rates(0.0, 0.0, 0.5), -5.0).perMin, 0.0)
         assertEquals(Rates(0.0, 0.0, 0.0), adjustRates(Rates(0.0, 0.0, 0.0), 5.0))
     }
 
@@ -55,20 +62,18 @@ class FareTest {
     private fun fix(step: Int, timeS: Int, speed: Double?, accuracy: Float = 5f) =
         Fix(6.85 + step * 0.0001, 79.95, accuracy, speed, timeS * 1000L)
 
-    @Test fun movingAddsDistanceNotWaiting() {
+    @Test fun movingAddsDistance() {
         val t = TripTracker()
         for (i in 0..10) t.onFix(fix(i, i, 11.0))
         assertEquals(111.2, t.distanceM, 1.0)
-        assertEquals(0L, t.waitingMs)
     }
 
-    @Test fun standingStillAddsWaitingAndIgnoresDrift() {
+    @Test fun standingStillIgnoresDrift() {
         val t = TripTracker()
         t.onFix(fix(0, 0, 0.0))
         // The position jitters by 11 m while the speed says the vehicle is stopped.
         for (i in 1..60) t.onFix(fix(i % 2, i, 0.0))
         assertEquals(0.0, t.distanceM, 0.001)
-        assertEquals(60_000L, t.waitingMs)
     }
 
     @Test fun badAccuracyIsIgnored() {
@@ -83,9 +88,8 @@ class FareTest {
         val t = TripTracker()
         t.onFix(fix(0, 0, null))
         t.onFix(fix(1, 1, null)) // 11 m in 1 s: moving
-        t.onFix(fix(1, 11, null)) // same place 10 s later: waiting
+        t.onFix(fix(1, 11, null)) // same place 10 s later: parked
         assertEquals(11.1, t.distanceM, 0.5)
-        assertEquals(10_000L, t.waitingMs)
     }
 
     @Test fun routeKeepsMovingPointsOnly() {
@@ -136,10 +140,4 @@ class FareTest {
         assertEquals(8, link.substringAfter("waypoints=").split("%7C").size)
     }
 
-    @Test fun longGpsGapCountsOnlyAShortWait() {
-        val t = TripTracker()
-        t.onFix(fix(0, 0, 0.0))
-        t.onFix(fix(0, 600, 0.0))
-        assertEquals(TripTracker.MAX_GAP_MS, t.waitingMs)
-    }
 }

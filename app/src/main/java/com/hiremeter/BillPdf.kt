@@ -65,11 +65,10 @@ fun writeBillPdf(ctx: Context, t: Trip, map: Bitmap?, route: List<LatLon>): File
     row(s.vehicleLabel, t.vehicle)
     row(s.date, SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(t.endedAtMs)))
     row(s.distance, km(t.distanceM))
-    row(s.waiting, clock(t.waitingMs))
     row(s.elapsed, clock(t.durationMs))
     line()
     row(s.distanceFare, rs(t.distanceFare))
-    row(s.waitingFare, rs(t.waitingFare))
+    row(s.timeFare, rs(t.timeFare))
     if (t.minimumTopUp > 0) row(s.minFareTopUp, rs(t.minimumTopUp))
     line()
     y += 8f

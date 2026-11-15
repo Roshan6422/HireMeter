@@ -19,19 +19,18 @@ private val TUK_ICON = if (Build.VERSION.SDK_INT >= 29) "🛺" else "🚖"
 
 /**
  * Starting prices. Three-wheeler: Rs. 110 first km, Rs. 90 after (Western Province revision of
- * March 2026). The other vehicles and all waiting charges are estimates; the driver sets their own
- * on the prices screen.
+ * March 2026). The other vehicles and all per-minute charges are estimates (PickMe has charged
+ * about Rs. 4 a minute for a Mini); the driver sets their own on the prices screen.
  */
 val DEFAULT_VEHICLES = listOf(
-    Vehicle("tuk", TUK_ICON, Rates(110.0, 90.0, 5.0)),
-    Vehicle("bike", "🏍️", Rates(60.0, 45.0, 3.0)),
-    Vehicle("mini", "🚗", Rates(150.0, 100.0, 6.0)),
-    Vehicle("flex", "🚗", Rates(160.0, 110.0, 7.0)),
-    Vehicle("car", "🚗", Rates(180.0, 120.0, 8.0)),
-    Vehicle("minivan", "🚐", Rates(200.0, 130.0, 9.0)),
-    Vehicle("van", "🚐", Rates(220.0, 150.0, 10.0)),
+    Vehicle("tuk", TUK_ICON, Rates(110.0, 90.0, 2.0)),
+    Vehicle("bike", "🏍️", Rates(60.0, 45.0, 1.0)),
+    Vehicle("mini", "🚗", Rates(150.0, 100.0, 3.0)),
+    Vehicle("flex", "🚗", Rates(160.0, 110.0, 3.0)),
+    Vehicle("car", "🚗", Rates(180.0, 120.0, 4.0)),
+    Vehicle("minivan", "🚐", Rates(200.0, 130.0, 5.0)),
+    Vehicle("van", "🚐", Rates(220.0, 150.0, 6.0)),
 )
-const val DEFAULT_FREE_WAIT_MIN = 3.0
 /** The largest change the "change all rates" box accepts in one press. */
 const val MAX_ADJUST_PCT = 50.0
 
@@ -44,7 +43,8 @@ object RatesStore {
             val byId = JSONObject(saved)
             DEFAULT_VEHICLES.map { v ->
                 val o = byId.optJSONObject(v.id) ?: return@map v
-                v.copy(rates = Rates(o.getDouble("first"), o.getDouble("perKm"), o.getDouble("wait"), o.optDouble("min", 0.0)))
+                // "wait" (a waiting-only charge in older versions) means something else now, so it is not reused.
+                v.copy(rates = Rates(o.getDouble("first"), o.getDouble("perKm"), o.optDouble("perMin", v.rates.perMin), o.optDouble("min", 0.0)))
             }
         } catch (e: Exception) {
             DEFAULT_VEHICLES
@@ -56,15 +56,13 @@ object RatesStore {
         for (v in vehicles) {
             byId.put(
                 v.id,
-                JSONObject().put("first", v.rates.firstKm).put("perKm", v.rates.perKm).put("wait", v.rates.waitPerMin)
+                JSONObject().put("first", v.rates.firstKm).put("perKm", v.rates.perKm).put("perMin", v.rates.perMin)
                     .put("min", v.rates.minFare),
             )
         }
         prefs(ctx).edit().putString("vehicles", byId.toString()).apply()
     }
 
-    fun freeWaitMin(ctx: Context) = prefs(ctx).getFloat("freeWait", DEFAULT_FREE_WAIT_MIN.toFloat()).toDouble()
-    fun setFreeWaitMin(ctx: Context, v: Double) = prefs(ctx).edit().putFloat("freeWait", v.toFloat()).apply()
 
     /** The percentage last used to change all rates at once. */
     fun adjustPct(ctx: Context) = prefs(ctx).getFloat("adjustPct", 5f).toDouble()
@@ -117,14 +115,14 @@ data class Trip(
     val endedAtMs: Long,
     val vehicle: String,
     val distanceM: Double,
-    val waitingMs: Long,
     val durationMs: Long,
     val distanceFare: Int,
-    val waitingFare: Int,
+    /** Charged for the trip time, per minute. */
+    val timeFare: Int,
     /** Added so a short trip still cost the minimum fare. */
     val minimumTopUp: Int = 0,
 ) {
-    val total: Int get() = distanceFare + waitingFare + minimumTopUp
+    val total: Int get() = distanceFare + timeFare + minimumTopUp
 }
 
 object HistoryStore {
@@ -138,7 +136,7 @@ object HistoryStore {
             (0 until arr.length()).map { i ->
                 val o = arr.getJSONObject(i)
                 Trip(
-                    o.getLong("t"), o.getString("v"), o.getDouble("d"), o.getLong("w"),
+                    o.getLong("t"), o.getString("v"), o.getDouble("d"),
                     o.getLong("dur"), o.getInt("df"), o.getInt("wf"), o.optInt("mf", 0),
                 )
             }
@@ -151,8 +149,8 @@ object HistoryStore {
         val arr = JSONArray()
         for (t in (listOf(trip) + load(ctx)).take(MAX_TRIPS)) {
             arr.put(
-                JSONObject().put("t", t.endedAtMs).put("v", t.vehicle).put("d", t.distanceM).put("w", t.waitingMs)
-                    .put("dur", t.durationMs).put("df", t.distanceFare).put("wf", t.waitingFare).put("mf", t.minimumTopUp),
+                JSONObject().put("t", t.endedAtMs).put("v", t.vehicle).put("d", t.distanceM)
+                    .put("dur", t.durationMs).put("df", t.distanceFare).put("wf", t.timeFare).put("mf", t.minimumTopUp),
             )
         }
         prefs(ctx).edit().putString("trips", arr.toString()).apply()
@@ -165,7 +163,6 @@ data class TripState(
     val running: Boolean = false,
     val startedAtMs: Long = 0,
     val distanceM: Double = 0.0,
-    val waitingMs: Long = 0,
     /** False until the first usable GPS reading of this trip arrives. */
     val hasGps: Boolean = false,
 )
@@ -189,7 +186,6 @@ object TripRepo {
         tracker.onFix(fix)
         _state.value = _state.value.copy(
             distanceM = tracker.distanceM,
-            waitingMs = tracker.waitingMs,
             hasGps = _state.value.hasGps || fix.accuracyM <= TripTracker.MAX_ACCURACY_M,
         )
     }

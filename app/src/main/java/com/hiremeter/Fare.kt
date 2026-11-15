@@ -3,43 +3,45 @@ package com.hiremeter
 import kotlin.math.asin
 import kotlin.math.cos
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-/** Prices for one vehicle type, in rupees. [minFare] 0 means there is no minimum fare. */
+/**
+ * Prices for one vehicle type, in rupees. [perMin] is charged for every minute of the trip, driving
+ * or not, like PickMe and Uber. [minFare] 0 means there is no minimum fare.
+ */
 data class Rates(
     val firstKm: Double,
     val perKm: Double,
-    val waitPerMin: Double,
+    val perMin: Double,
     val minFare: Double = 0.0,
 )
 
 /** [minimumTopUp] is what is added so a short trip still costs the minimum fare. */
-data class FareBreakdown(val distanceFare: Int, val waitingFare: Int, val minimumTopUp: Int = 0) {
-    val total: Int get() = distanceFare + waitingFare + minimumTopUp
+data class FareBreakdown(val distanceFare: Int, val timeFare: Int, val minimumTopUp: Int = 0) {
+    val total: Int get() = distanceFare + timeFare + minimumTopUp
 }
 
 /**
+ * The fare the way PickMe and Uber work it out: distance plus time, both always.
  * The first kilometre (or any part of it) costs [Rates.firstKm]; every kilometre after it costs
- * [Rates.perKm], charged by the metre. Waiting is charged by the second after [freeWaitMin] free minutes.
- * However short the trip, the total is never less than [Rates.minFare].
+ * [Rates.perKm], charged by the metre. Every minute of the trip ([tripMs], from start to end)
+ * costs [Rates.perMin], charged by the second. However short the trip, the total is never less
+ * than [Rates.minFare].
  */
-fun calculateFare(distanceM: Double, waitingMs: Long, rates: Rates, freeWaitMin: Double): FareBreakdown {
+fun calculateFare(distanceM: Double, tripMs: Long, rates: Rates): FareBreakdown {
     val km = distanceM / 1000.0
-    val distanceFare = rates.firstKm + max(0.0, km - 1.0) * rates.perKm
-    val chargedWaitMin = max(0.0, waitingMs / 60000.0 - freeWaitMin)
-    val distance = distanceFare.roundToInt()
-    val waiting = (chargedWaitMin * rates.waitPerMin).roundToInt()
-    val topUp = max(0, rates.minFare.roundToInt() - distance - waiting)
-    return FareBreakdown(distance, waiting, topUp)
+    val distance = (rates.firstKm + max(0.0, km - 1.0) * rates.perKm).roundToInt()
+    val time = (max(0L, tripMs) / 60000.0 * rates.perMin).roundToInt()
+    val topUp = max(0, rates.minFare.roundToInt() - distance - time)
+    return FareBreakdown(distance, time, topUp)
 }
 
 /**
  * Every price in [rates] raised or lowered by [percent] (5 = 5% more, -5 = 5% less), kept to round
  * amounts: whole rupees for prices of Rs. 20 or more, half rupees below that. A price always moves
- * by at least one step, so a small waiting charge still changes when the button is pressed.
+ * by at least one step, so a small per-minute charge still changes when the button is pressed.
  */
 fun adjustRates(rates: Rates, percent: Double): Rates {
     fun one(v: Double): Double {
@@ -49,7 +51,7 @@ fun adjustRates(rates: Rates, percent: Double): Rates {
         if (n == v) n = if (percent > 0) v + step else v - step
         return max(0.0, n)
     }
-    return Rates(one(rates.firstKm), one(rates.perKm), one(rates.waitPerMin), one(rates.minFare))
+    return Rates(one(rates.firstKm), one(rates.perKm), one(rates.perMin), one(rates.minFare))
 }
 
 /** One GPS reading. [timeMs] only has to increase steadily (it is not a clock time). */
@@ -122,13 +124,12 @@ fun haversineM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
 }
 
 /**
- * Turns GPS readings into distance driven and time spent waiting, like a taxi meter: while the
- * vehicle is slower than [WAIT_SPEED_MPS] the time counts as waiting, otherwise the distance counts.
+ * Turns GPS readings into the distance driven. While the vehicle is slower than [STILL_SPEED_MPS]
+ * its position is held, so GPS drift while parked adds no distance; the few metres crawled in slow
+ * traffic are counted once it moves on.
  */
 class TripTracker {
     var distanceM = 0.0
-        private set
-    var waitingMs = 0L
         private set
     private var last: Fix? = null
     private val points = ArrayList<LatLon>()
@@ -158,10 +159,7 @@ class TripTracker {
         if (dt <= 0) return
         val d = haversineM(prev.lat, prev.lon, fix.lat, fix.lon)
         val speed = fix.speedMps ?: (d / (dt / 1000.0))
-        if (speed < WAIT_SPEED_MPS) {
-            // Standing still or crawling. The position is kept, so GPS drift adds no distance and
-            // the few metres crawled are counted once the vehicle moves off again.
-            waitingMs += min(dt, MAX_GAP_MS)
+        if (speed < STILL_SPEED_MPS) {
             last = prev.copy(timeMs = fix.timeMs)
         } else {
             distanceM += d
@@ -172,10 +170,8 @@ class TripTracker {
 
     companion object {
         const val MAX_ROUTE_POINTS = 3000
-        /** About 5 km/h. */
-        const val WAIT_SPEED_MPS = 1.4
+        /** About 5 km/h: slower than this the GPS position is mostly drift. */
+        const val STILL_SPEED_MPS = 1.4
         const val MAX_ACCURACY_M = 35f
-        /** After a GPS gap (tunnel, phone asleep) at most this much is counted as waiting. */
-        const val MAX_GAP_MS = 15000L
     }
 }
