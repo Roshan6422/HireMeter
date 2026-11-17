@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class FareTest {
-    private val tuk = Rates(firstKm = 110.0, perKm = 90.0, perMin = 2.0)
+    private val tuk = Rates(firstKm = 110.0, perKm = 90.0, waitPerMin = 2.0)
 
     @Test fun shortTripCostsFirstKm() {
         assertEquals(FareBreakdown(110, 0), calculateFare(400.0, 0, tuk))
@@ -15,14 +15,14 @@ class FareTest {
         assertEquals(110 + 405, calculateFare(5500.0, 0, tuk).distanceFare)
     }
 
-    @Test fun everyMinuteOfTheTripIsCharged() {
-        // No free minutes: 10 minutes at Rs. 2, 90 seconds at Rs. 2.
-        assertEquals(20, calculateFare(0.0, 10 * 60_000L, tuk).timeFare)
-        assertEquals(3, calculateFare(0.0, 90_000L, tuk).timeFare)
+    @Test fun waitingIsChargedBySecond() {
+        // 10 minutes at Rs. 2, 90 seconds at Rs. 2.
+        assertEquals(20, calculateFare(0.0, 10 * 60_000L, tuk).waitingFare)
+        assertEquals(3, calculateFare(0.0, 90_000L, tuk).waitingFare)
     }
 
-    @Test fun distanceAndTimeAreBothCharged() {
-        // 5.5 km in 20 minutes: 515 for the distance + 40 for the time.
+    @Test fun distanceAndWaitingAreAdded() {
+        // 5.5 km with 20 minutes of waiting: 515 for the distance + 40 for the waiting.
         assertEquals(FareBreakdown(515, 40), calculateFare(5500.0, 20 * 60_000L, tuk))
         assertEquals(555, calculateFare(5500.0, 20 * 60_000L, tuk).total)
     }
@@ -36,25 +36,25 @@ class FareTest {
     @Test fun minimumFareAddsNothingOnceTheTripCostsMore() {
         val withMin = tuk.copy(minFare = 150.0)
         assertEquals(FareBreakdown(515, 0, 0), calculateFare(5500.0, 0, withMin))
-        // Time counts towards the minimum too: 110 + 30 = 140, so 10 is added.
+        // Waiting counts towards the minimum too: 110 + 30 = 140, so 10 is added.
         assertEquals(FareBreakdown(110, 30, 10), calculateFare(400.0, 15 * 60_000L, withMin))
     }
 
     @Test fun allRatesMoveByFivePercentToRoundAmounts() {
-        val r = Rates(firstKm = 200.0, perKm = 100.0, perMin = 5.0)
+        val r = Rates(firstKm = 200.0, perKm = 100.0, waitPerMin = 5.0)
         assertEquals(Rates(210.0, 105.0, 5.5), adjustRates(r, 5.0))
         assertEquals(Rates(190.0, 95.0, 4.5), adjustRates(r, -5.0))
     }
 
     @Test fun anyPercentageWorks() {
-        val r = Rates(firstKm = 200.0, perKm = 100.0, perMin = 5.0, minFare = 300.0)
+        val r = Rates(firstKm = 200.0, perKm = 100.0, waitPerMin = 5.0, minFare = 300.0)
         assertEquals(Rates(204.0, 102.0, 5.5, 306.0), adjustRates(r, 2.0))
         assertEquals(Rates(194.0, 97.0, 4.5, 291.0), adjustRates(r, -3.0))
     }
 
     @Test fun smallRatesStillMoveAndNeverGoBelowZero() {
-        assertEquals(1.0, adjustRates(Rates(0.0, 0.0, 0.5), 5.0).perMin, 0.0)
-        assertEquals(0.0, adjustRates(Rates(0.0, 0.0, 0.5), -5.0).perMin, 0.0)
+        assertEquals(1.0, adjustRates(Rates(0.0, 0.0, 0.5), 5.0).waitPerMin, 0.0)
+        assertEquals(0.0, adjustRates(Rates(0.0, 0.0, 0.5), -5.0).waitPerMin, 0.0)
         assertEquals(Rates(0.0, 0.0, 0.0), adjustRates(Rates(0.0, 0.0, 0.0), 5.0))
     }
 

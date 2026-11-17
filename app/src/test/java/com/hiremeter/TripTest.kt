@@ -3,7 +3,9 @@ package com.hiremeter
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/** Whole trips, one GPS reading a second, checking the distance and the fare PickMe / Uber style. */
+private val tuk = Rates(firstKm = 110.0, perKm = 90.0, waitPerMin = 2.0)
+
+/** Whole trips, one GPS reading a second, checking the distance, the waiting and the fare. */
 class TripTest {
     /** Drives a [TripTracker] along a straight road, [m] metres from the start. */
     private class Sim {
@@ -27,26 +29,70 @@ class TripTest {
         /** Readings too inaccurate to use, while parked. */
         fun badReadings(seconds: Int) = repeat(seconds) { s++; t.onFix(fix(m + 60.0, 0.0, accuracy = 80f)) }
 
-        val tripMs get() = s * 1000L
+        fun fare() = calculateFare(t.distanceM, t.waitedMs, tuk)
     }
 
-    private val tuk = Rates(firstKm = 110.0, perKm = 90.0, perMin = 2.0)
-
-    @Test fun redLightAddsNoDistanceButItsTimeIsCharged() {
+    @Test fun aRedLightIsFree() {
         val sim = Sim()
-        sim.drive(60); sim.stop(120); sim.drive(60)
+        sim.drive(60); sim.stop(90); sim.drive(60)
         assertEquals(1200.0, sim.t.distanceM, 1.0)
-        // 1.2 km = 110 + 18; 4 minutes = 8.
-        assertEquals(FareBreakdown(128, 8), calculateFare(sim.t.distanceM, sim.tripMs, tuk))
+        // 1.2 km = 110 + 18; the 90 second stop is not waiting.
+        assertEquals(FareBreakdown(128, 0), sim.fare())
     }
 
-    @Test fun slowTrafficIsChargedForItsDistanceAndTimeOnce() {
+    @Test fun aLongStopIsWaitingFromItsStart() {
         val sim = Sim()
-        sim.drive(30); sim.drive(300, mps = 0.8); sim.drive(30)
+        sim.drive(80); sim.stop(300); sim.drive(60)
+        assertEquals(1400.0, sim.t.distanceM, 1.0)
+        // All 5 minutes at Rs. 2, not only the 3 after the free 2. 1.4 km = 110 + 36.
+        assertEquals(300_000L, sim.t.waitedMs)
+        assertEquals(FareBreakdown(146, 10), sim.fare())
+    }
+
+    @Test fun noWaitingBeforeTheFirst700Metres() {
+        val sim = Sim()
+        // Standing at the start while the customer gets in, then a long stop 300 m on.
+        sim.stop(300); sim.drive(30); sim.stop(300)
+        assertEquals(0L, sim.t.waitedMs)
+        // Past 700 m, the same stop is waiting.
+        sim.drive(50); sim.stop(300); sim.drive(10)
+        assertEquals(300_000L, sim.t.waitedMs)
+    }
+
+    @Test fun waitingShowsWhileTheStopGoesOn() {
+        val sim = Sim()
+        sim.drive(80); sim.stop(100)
+        assertEquals(100_000L, sim.t.currentStopMs)
+        assertEquals(0L, sim.t.waitedMs)
+        sim.stop(50)
+        assertEquals(150_000L, sim.t.waitedMs)
+        sim.drive(10)
+        assertEquals(0L, sim.t.currentStopMs)
+        assertEquals(150_000L, sim.t.waitedMs)
+    }
+
+    @Test fun shortStopsDoNotAddUp() {
+        val sim = Sim()
+        repeat(5) { sim.drive(30); sim.stop(100) }
+        sim.drive(30)
+        assertEquals(0L, sim.t.waitedMs)
+    }
+
+    @Test fun slowTrafficIsChargedForItsDistanceOnceAndAsWaitingWhenLong() {
+        val sim = Sim()
+        sim.drive(80); sim.drive(300, mps = 0.8); sim.drive(30)
         // The 240 m crawled count once, when the vehicle moves on.
-        assertEquals(300.0 + 240.0 + 300.0, sim.t.distanceM, 1.0)
-        // 6 minutes at Rs. 2, nothing more for being slow.
-        assertEquals(12, calculateFare(sim.t.distanceM, sim.tripMs, tuk).timeFare)
+        assertEquals(800.0 + 240.0 + 300.0, sim.t.distanceM, 1.0)
+        // Slower than walking for 5 minutes: that is waiting, 5 minutes at Rs. 2.
+        assertEquals(10, sim.fare().waitingFare)
+    }
+
+    @Test fun theFreeStopCanBeSetLonger() {
+        val t = TripTracker(freeStopMs = 5 * 60_000L)
+        fun fix(s: Int, speed: Double) = Fix(6.85 + (if (s < 30) s * 10.0 else 300.0) / 111_195.0, 79.95, 5f, speed, s * 1000L)
+        for (s in 0..30) t.onFix(fix(s, 10.0))
+        for (s in 31..270) t.onFix(fix(s, 0.0)) // 4 minutes stopped
+        assertEquals(0L, t.waitedMs)
     }
 
     @Test fun lostOrPoorGpsWhileParkedAddsNoDistance() {
@@ -83,8 +129,8 @@ class TripTest {
         assertEquals(20_000.0, s.distanceM, 5.0)
         assertEquals(3600_000L, s.activeMs(end))
         assertEquals(3 * 3600_000L, s.pausedMs(end))
-        // 20 km = 110 + 19 x 90 = 1820; 60 minutes x Rs. 2 = 120.
-        assertEquals(FareBreakdown(1820, 120), calculateFare(s.distanceM, s.activeMs(end), tuk))
+        // 20 km = 110 + 19 x 90 = 1820; it never stood still, and the pause is not charged.
+        assertEquals(FareBreakdown(1820, 0), calculateFare(s.distanceM, s.waitedMs(end), tuk))
         // The map starts the second piece where the meter was resumed, 25 km out.
         val route = TripRepo.routeSnapshot()
         val b = TripRepo.routeBreaksSnapshot().single()
@@ -93,19 +139,37 @@ class TripTest {
 
     @Test fun pausedTimeIsChargedAsWaitingOnlyWhenTheDriverChooses() {
         val r = tuk.copy(waitPerMin = 3.0)
-        // 20 km, 60 minutes driving, 3 hours paused.
-        val notCharged = calculateFare(20_000.0, 3600_000, r)
-        assertEquals(FareBreakdown(1820, 120), notCharged)
-        val charged = calculateFare(20_000.0, 3600_000, r, chargedPauseMs = 3 * 3600_000)
+        // 20 km, 10 minutes of long stops, 3 hours paused.
+        val trip = TripState(running = true, startedAtMs = 0, pausedTotalMs = 3 * 3600_000L, stopWaitMs = 600_000)
+        val end = 4 * 3600_000L
+        val notCharged = calculateFare(20_000.0, trip.waitedMs(end), r)
+        assertEquals(FareBreakdown(1820, 30), notCharged)
+        val charged = calculateFare(20_000.0, trip.copy(chargePaused = true).waitedMs(end), r)
         // 180 minutes x Rs. 3 = 540 more.
-        assertEquals(FareBreakdown(1820, 120, 0, 540), charged)
-        assertEquals(2480, charged.total)
+        assertEquals(FareBreakdown(1820, 570), charged)
+        assertEquals(2390, charged.total)
     }
 
     @Test fun waitingCountsTowardsTheMinimumFare() {
         val r = tuk.copy(minFare = 200.0, waitPerMin = 3.0)
-        // 110 + 0 + 30 minutes paused x 3 = 200: nothing to add.
-        assertEquals(FareBreakdown(110, 0, 0, 90), calculateFare(500.0, 0, r, chargedPauseMs = 1800_000))
+        // 110 + 30 minutes x 3 = 200: nothing to add.
+        assertEquals(FareBreakdown(110, 90, 0), calculateFare(500.0, 1800_000, r))
+    }
+
+    @Test fun pausingEndsAStopAndTheStopsBeforeItAreKept() {
+        TripRepo.start(0)
+        for (i in 0..30) TripRepo.onFix(at(i * 30.0, i * 1000L))
+        for (i in 31..210) TripRepo.onFix(Fix(6.85 + 900 * metre, 79.95, 5f, 0.0, i * 1000L)) // 3 minutes still
+        assertEquals(180_000L, TripRepo.state.value.stopWaitMs)
+        assertEquals(180_000L, TripRepo.state.value.stoppedMs)
+        TripRepo.pause(211_000)
+        TripRepo.resume(400_000)
+        // Standing still for a minute after resuming is a new, short stop.
+        for (i in 0..60) TripRepo.onFix(Fix(6.85 + 900 * metre, 79.95, 5f, 0.0, 500_000 + i * 1000L))
+        val s = TripRepo.state.value
+        TripRepo.stop()
+        assertEquals(180_000L, s.stopWaitMs)
+        assertEquals(180_000L, s.waitedMs(600_000))
     }
 
     @Test fun switchingWaitingOnIsKeptOnTheTrip() {
@@ -146,6 +210,7 @@ class TripTest {
         assertEquals(before.pausedAtMs, after.pausedAtMs)
         assertEquals(true, after.chargePaused)
         assertEquals(10, TripRepo.routeSnapshot().size)
+        assertEquals(before.stopWaitMs, after.stopWaitMs)
 
         // Resumed after the phone restarted: its GPS clock starts again from zero.
         TripRepo.resume(100_000)
@@ -169,6 +234,20 @@ class TripTest {
         val d = TripRepo.state.value.distanceM
         TripRepo.finish()
         assertEquals(1500.0, d, 5.0)
+    }
+
+    @Test fun waitingSurvivesTheAppBeingKilled() {
+        val box = Box()
+        TripRepo.init(box)
+        TripRepo.start(0)
+        for (i in 0..10) TripRepo.onFix(at(i * 100.0, i * 1000L))
+        for (i in 11..250) TripRepo.onFix(Fix(6.85 + 1000 * metre, 79.95, 5f, 0.0, i * 1000L)) // 4 minutes still
+        for (i in 251..260) TripRepo.onFix(at(1000.0 + (i - 250) * 100.0, i * 1000L))
+        TripRepo.stop()
+        TripRepo.restoreIfNeeded()
+        val waited = TripRepo.state.value.stopWaitMs
+        TripRepo.finish()
+        assertEquals(240_000L, waited)
     }
 
     @Test fun nothingIsRestoredWhenATripIsAlreadyRunning() {
@@ -196,10 +275,10 @@ class TripTest {
         assertEquals(6.0 + 1001 * 0.0001, t.route[b].lat, 0.00011)
     }
 
-    @Test fun timeIsChargedEvenWithoutGps() {
-        // Time comes from the clock, not the GPS: 10 minutes parked with no signal still cost 10 minutes.
+    @Test fun waitingWithoutGpsCountsWhenTheSignalComesBackStill() {
+        // Parked under a roof for 10 minutes: no readings, then still in the same place.
         val sim = Sim()
-        sim.noGps(600)
-        assertEquals(FareBreakdown(110, 20), calculateFare(sim.t.distanceM, sim.tripMs, tuk))
+        sim.drive(80); sim.noGps(600); sim.stop(5); sim.drive(30)
+        assertEquals(605_000L, sim.t.waitedMs)
     }
 }

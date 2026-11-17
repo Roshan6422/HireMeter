@@ -8,42 +8,33 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Prices for one vehicle type, in rupees. [perMin] is charged for every minute of the trip, driving
- * or not, like PickMe and Uber. [minFare] 0 means there is no minimum fare. [waitPerMin] is for
- * time the meter was paused (customers away, e.g. on an up-and-down hire), only when the driver
- * chooses to charge it.
+ * Prices for one vehicle type, in rupees. [waitPerMin] is charged for waiting: the vehicle stopped
+ * longer than a traffic light, and paused time when the driver chooses to charge it. Driving
+ * costs only its distance. [minFare] 0 means there is no minimum fare.
  */
 data class Rates(
     val firstKm: Double,
     val perKm: Double,
-    val perMin: Double,
-    val minFare: Double = 0.0,
     val waitPerMin: Double = 0.0,
+    val minFare: Double = 0.0,
 )
 
-/**
- * [minimumTopUp] is what is added so a short trip still costs the minimum fare; [waitingFare] is
- * for paused time the driver chose to charge.
- */
-data class FareBreakdown(val distanceFare: Int, val timeFare: Int, val minimumTopUp: Int = 0, val waitingFare: Int = 0) {
-    val total: Int get() = distanceFare + timeFare + minimumTopUp + waitingFare
+/** [minimumTopUp] is what is added so a short trip still costs the minimum fare. */
+data class FareBreakdown(val distanceFare: Int, val waitingFare: Int = 0, val minimumTopUp: Int = 0) {
+    val total: Int get() = distanceFare + waitingFare + minimumTopUp
 }
 
 /**
- * The fare the way PickMe and Uber work it out: distance plus time, both always.
  * The first kilometre (or any part of it) costs [Rates.firstKm]; every kilometre after it costs
- * [Rates.perKm], charged by the metre. Every minute of the trip ([tripMs], from start to end)
- * costs [Rates.perMin], charged by the second. Paused time the driver chose to charge
- * ([chargedPauseMs]) costs [Rates.waitPerMin]. However short the trip, the total is never less
- * than [Rates.minFare].
+ * [Rates.perKm], charged by the metre. Waiting ([waitedMs]) costs [Rates.waitPerMin], charged by
+ * the second. However short the trip, the total is never less than [Rates.minFare].
  */
-fun calculateFare(distanceM: Double, tripMs: Long, rates: Rates, chargedPauseMs: Long = 0): FareBreakdown {
+fun calculateFare(distanceM: Double, waitedMs: Long, rates: Rates): FareBreakdown {
     val km = distanceM / 1000.0
     val distance = (rates.firstKm + max(0.0, km - 1.0) * rates.perKm).roundToInt()
-    val time = (max(0L, tripMs) / 60000.0 * rates.perMin).roundToInt()
-    val waiting = (max(0L, chargedPauseMs) / 60000.0 * rates.waitPerMin).roundToInt()
-    val topUp = max(0, rates.minFare.roundToInt() - distance - time - waiting)
-    return FareBreakdown(distance, time, topUp, waiting)
+    val waiting = (max(0L, waitedMs) / 60000.0 * rates.waitPerMin).roundToInt()
+    val topUp = max(0, rates.minFare.roundToInt() - distance - waiting)
+    return FareBreakdown(distance, waiting, topUp)
 }
 
 /**
@@ -59,7 +50,7 @@ fun adjustRates(rates: Rates, percent: Double): Rates {
         if (n == v) n = if (percent > 0) v + step else v - step
         return max(0.0, n)
     }
-    return Rates(one(rates.firstKm), one(rates.perKm), one(rates.perMin), one(rates.minFare), one(rates.waitPerMin))
+    return Rates(one(rates.firstKm), one(rates.perKm), one(rates.waitPerMin), one(rates.minFare))
 }
 
 /** One GPS reading. [timeMs] only has to increase steadily (it is not a clock time). */
@@ -132,13 +123,76 @@ fun haversineM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
 }
 
 /**
- * Turns GPS readings into the distance driven. While the vehicle is slower than [STILL_SPEED_MPS]
- * its position is held, so GPS drift while parked adds no distance; the few metres crawled in slow
- * traffic are counted once it moves on.
+ * Turns GPS readings into the distance driven and the time spent waiting. While the vehicle is
+ * slower than [STILL_SPEED_MPS] its position is held, so GPS drift while parked adds no distance;
+ * the few metres crawled in slow traffic are counted once it moves on.
+ *
+ * A stop shorter than [freeStopMs] (a traffic light, a jam) is not waiting. A stop that lasts
+ * longer is waiting from its very start. Nothing is waiting until the vehicle has gone
+ * [waitAfterM]: standing at the start (the customer getting in, loading bags) is not charged.
+ *
+ * A stop where [isTrafficLight] says there is a light may last [signalFreeMs] before it is
+ * waiting, since a red light can be longer than an ordinary free stop. The driver can also say a
+ * stop is at a light ([markStopAsLight]); that stop is then never waiting.
  */
-class TripTracker {
+class TripTracker(
+    val freeStopMs: Long = DEFAULT_FREE_STOP_MS,
+    val waitAfterM: Double = WAIT_AFTER_M,
+    val signalFreeMs: Long = DEFAULT_SIGNAL_FREE_MS,
+    private val isTrafficLight: (LatLon) -> Boolean = { false },
+) {
     var distanceM = 0.0
         private set
+    /** How fast the vehicle is going now; 0 when stopped. */
+    var speedMps = 0.0
+        private set
+    /** Earlier stops that were long enough to be waiting. */
+    private var longStopsMs = 0L
+    /** When the stop going on now began, and its latest reading, on the readings' clock. */
+    private var stopFrom: Long? = null
+    private var stopTo = 0L
+    /** Where the stop going on now is. */
+    private var stopPlace: LatLon? = null
+
+    /** The stop going on now is at a known traffic light. */
+    var stopAtLight = false
+        private set
+    /** The driver said the stop going on now is at a traffic light: it is never waiting. */
+    var stopMarkedLight = false
+        private set
+
+    /** How long the stop going on now may last before it is waiting. */
+    val currentFreeMs: Long get() = when {
+        stopMarkedLight -> Long.MAX_VALUE
+        stopAtLight -> maxOf(freeStopMs, signalFreeMs)
+        else -> freeStopMs
+    }
+
+    /** How long the vehicle has been stopped now; 0 while it moves. */
+    val currentStopMs: Long get() = stopFrom?.let { maxOf(0L, stopTo - it) } ?: 0L
+
+    /** All waiting so far, including the stop going on now once it is longer than [currentFreeMs]. */
+    val waitedMs: Long get() = longStopsMs + currentStopMs.let { if (it >= currentFreeMs) it else 0L }
+
+    /** The vehicle moved on, or the meter was paused: the stop going on is over. */
+    fun endStop() {
+        longStopsMs = waitedMs
+        stopFrom = null
+        stopPlace = null
+        stopAtLight = false
+        stopMarkedLight = false
+        speedMps = 0.0
+    }
+
+    /**
+     * The driver says the vehicle is stopped at a traffic light: this stop is not charged, however
+     * long. Returns where it is, so the light can be remembered; null when not stopped.
+     */
+    fun markStopAsLight(): LatLon? {
+        if (stopFrom == null) return null
+        stopMarkedLight = true
+        return stopPlace
+    }
     private var last: Fix? = null
     private val points = ArrayList<LatLon>()
     private val breaks = ArrayList<Int>()
@@ -157,13 +211,15 @@ class TripTracker {
      * clock means nothing any more (it restarts with the phone), so the next reading is taken as
      * long after it; distance carries on from [lastPlace] once the vehicle is seen moving.
      */
-    fun restore(distanceM: Double, route: List<LatLon>, routeBreaks: List<Int>, lastPlace: LatLon?) {
+    fun restore(distanceM: Double, route: List<LatLon>, routeBreaks: List<Int>, lastPlace: LatLon?, waitedMs: Long = 0) {
         this.distanceM = distanceM
+        longStopsMs = waitedMs
+        stopFrom = null
         points.clear()
         points.addAll(route)
         breaks.clear()
         breaks.addAll(routeBreaks)
-        last = lastPlace?.let { Fix(it.lat, it.lon, 0f, null, Long.MIN_VALUE / 2) }
+        last = lastPlace?.let { Fix(it.lat, it.lon, 0f, null, RESTORED) }
     }
 
     /**
@@ -171,6 +227,7 @@ class TripTracker {
      * starts a new piece of route and adds no distance from where the last piece ended.
      */
     fun newPiece() {
+        endStop()
         last = null
         if (points.isNotEmpty() && breaks.lastOrNull() != points.size) breaks.add(points.size)
     }
@@ -195,6 +252,7 @@ class TripTracker {
         if (prev == null) {
             last = fix
             addPoint(fix)
+            speedMps = fix.speedMps ?: 0.0
             return
         }
         val dt = fix.timeMs - prev.timeMs
@@ -202,8 +260,18 @@ class TripTracker {
         val d = haversineM(prev.lat, prev.lon, fix.lat, fix.lon)
         val speed = fix.speedMps ?: (d / (dt / 1000.0))
         if (speed < STILL_SPEED_MPS) {
+            // The stop began after the last reading that moved (unknown after a restart: from now).
+            if (stopFrom == null && distanceM >= waitAfterM) {
+                stopFrom = if (prev.timeMs == RESTORED) fix.timeMs else prev.timeMs
+                // The held position, not the wandering reading: where the vehicle really stopped.
+                stopPlace = LatLon(prev.lat, prev.lon).also { stopAtLight = isTrafficLight(it) }
+            }
+            stopTo = fix.timeMs
+            speedMps = 0.0
             last = prev.copy(timeMs = fix.timeMs)
         } else {
+            endStop()
+            speedMps = speed
             distanceM += d
             last = fix
             addPoint(fix)
@@ -215,5 +283,13 @@ class TripTracker {
         /** About 5 km/h: slower than this the GPS position is mostly drift. */
         const val STILL_SPEED_MPS = 1.4
         const val MAX_ACCURACY_M = 35f
+        /** Stops shorter than this are traffic lights, not waiting, unless the driver sets otherwise. */
+        const val DEFAULT_FREE_STOP_MS = 2 * 60_000L
+        /** At a traffic light a stop may last this long before it is waiting: red lights can be long. */
+        const val DEFAULT_SIGNAL_FREE_MS = 5 * 60_000L
+        /** No waiting is counted before the vehicle has gone this far on the trip. */
+        const val WAIT_AFTER_M = 700.0
+        /** The clock of a reading saved before the app was stopped; it means nothing any more. */
+        private const val RESTORED = Long.MIN_VALUE / 2
     }
 }

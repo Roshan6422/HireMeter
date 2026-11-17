@@ -17,6 +17,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -42,6 +44,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -77,18 +80,25 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.max
 
-private val Green = Color(0xFF0B6E4F)
-private val Red = Color(0xFFC62828)
-private val Amber = Color(0xFFB26A00)
+internal val Green = Color(0xFF0B6E4F)
+internal val Red = Color(0xFFC62828)
+internal val Amber = Color(0xFFB26A00)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Tr.load(this)
         TripRepo.init(this)
+        TrafficLights.load(this)
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(primary = Green)) { App() }
         }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Going to another app or locking the phone is a safe moment to back up to Drive.
+        DriveBackup.saveLater(this)
     }
 
     override fun onResume() {
@@ -119,10 +129,9 @@ fun billText(t: Trip, route: List<LatLon>) = buildString {
     appendLine(SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(t.endedAtMs)))
     appendLine("${s.vehicleLabel}: ${t.vehicle}")
     appendLine("${s.distance}: ${km(t.distanceM)}  →  ${rs(t.distanceFare)}")
-    appendLine("${s.elapsed}: ${clock(t.durationMs)}  →  ${rs(t.timeFare)}")
-    // The customer's copy never mentions pausing; charged waiting shows as plain waiting time.
-    if (t.waitingFare > 0) appendLine("${s.waitedLabel}: ${clock(t.pausedMs)}")
-    if (t.waitingFare > 0) appendLine("${s.waitingFareLabel}: ${rs(t.waitingFare)}")
+    appendLine("${s.elapsed}: ${clock(t.durationMs)}" + if (t.timeFare > 0) "  →  ${rs(t.timeFare)}" else "")
+    // The customer's copy never mentions pausing; charged pause time is part of the waiting time.
+    if (t.waitingFare > 0) appendLine("${s.waitedLabel}: ${clock(t.waitedMs)}  →  ${rs(t.waitingFare)}")
     if (t.minimumTopUp > 0) appendLine("${s.minFareTopUp}: ${rs(t.minimumTopUp)}")
     append("${s.total}: ${rs(t.total)}")
     googleMapsLink(route)?.let { append("\n\n${s.routeLink}\n$it") }
@@ -141,7 +150,7 @@ fun App() {
     Scaffold(
         bottomBar = {
             NavigationBar {
-                listOf("🚕" to s.tabMeter, "💰" to s.tabRates, "📒" to s.tabTrips, "⚙️" to s.tabSettings).forEachIndexed { i, (icon, label) ->
+                listOf("🚕" to s.tabMeter, "🏎️" to s.tabSpeed, "💰" to s.tabRates, "📒" to s.tabTrips, "⚙️" to s.tabSettings).forEachIndexed { i, (icon, label) ->
                     NavigationBarItem(
                         selected = tab == i,
                         onClick = { tab = i },
@@ -159,9 +168,10 @@ fun App() {
                     vehicles = vehicles,
                     selectedId = selectedId,
                     onSelect = { selectedId = it; RatesStore.setSelectedId(ctx, it) },
-                    onTripSaved = { history = HistoryStore.load(ctx) },
+                    onTripSaved = { history = HistoryStore.load(ctx); DriveBackup.saveLater(ctx) },
                 )
-                1 -> RatesScreen(
+                1 -> SpeedScreen()
+                2 -> RatesScreen(
                     vehicles = vehicles,
                     locked = trip.running,
                     onVehicle = { v ->
@@ -173,7 +183,11 @@ fun App() {
                         RatesStore.save(ctx, vehicles)
                     },
                 )
-                2 -> HistoryScreen(history, onClear = { HistoryStore.clear(ctx); history = emptyList() })
+                3 -> HistoryScreen(
+                    history,
+                    onClear = { HistoryStore.clear(ctx); history = emptyList() },
+                    onDelete = { HistoryStore.delete(ctx, it); history = HistoryStore.load(ctx) },
+                )
                 else -> SettingsScreen()
             }
         }
@@ -209,6 +223,8 @@ fun MeterScreen(
     var finishedBreaks by remember { mutableStateOf<List<Int>>(emptyList()) }
     var payFor by remember { mutableStateOf<Trip?>(null) }
     var confirmEnd by remember { mutableStateOf(false) }
+    var confirmPause by remember { mutableStateOf(false) }
+    val otherHiresButton = remember { AppSettings.otherHiresButton(ctx) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(trip.running) {
         while (trip.running) {
@@ -225,27 +241,31 @@ fun MeterScreen(
     }
 
     val elapsedMs = if (trip.running) trip.activeMs(now) else 0L
-    val chargedPauseMs = if (trip.running && trip.chargePaused) trip.pausedMs(now) else 0L
-    val fare = calculateFare(trip.distanceM, elapsedMs, vehicle.rates, chargedPauseMs)
+    val waitedMs = if (trip.running) trip.waitedMs(now) else 0L
+    val fare = calculateFare(trip.distanceM, waitedMs, vehicle.rates)
     val showTrip = trip.running
 
     val endTrip = {
         val endMs = System.currentTimeMillis()
         val tripMs = trip.activeMs(endMs)
         val pausedMs = trip.pausedMs(endMs)
-        val endFare = calculateFare(trip.distanceM, tripMs, vehicle.rates, if (trip.chargePaused) pausedMs else 0L)
+        val endWaitedMs = trip.waitedMs(endMs)
+        val route = TripRepo.routeSnapshot()
+        val endFare = calculateFare(trip.distanceM, endWaitedMs, vehicle.rates)
         val done = Trip(
             endedAtMs = endMs,
             vehicle = s.vehicleName(vehicle.id),
             distanceM = trip.distanceM,
             durationMs = tripMs,
             distanceFare = endFare.distanceFare,
-            timeFare = endFare.timeFare,
             minimumTopUp = endFare.minimumTopUp,
             pausedMs = pausedMs,
             waitingFare = endFare.waitingFare,
+            waitedMs = endWaitedMs,
+            pauseCharged = trip.chargePaused && pausedMs > 0,
+            route = shortRoute(route),
         )
-        finishedRoute = TripRepo.routeSnapshot()
+        finishedRoute = route
         finishedBreaks = TripRepo.routeBreaksSnapshot()
         TripRepo.finish()
         ctx.stopService(Intent(ctx, MeterService::class.java))
@@ -258,18 +278,18 @@ fun MeterScreen(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // The vehicle cannot change during a trip, so its choice makes room for the buttons then.
+        if (!trip.running) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (v in vehicles) {
                 FilterChip(
                     selected = v.id == vehicle.id,
-                    enabled = !trip.running,
                     onClick = { onSelect(v.id) },
                     label = { Text("${v.icon} ${s.vehicleName(v.id)}") },
                 )
             }
         }
         Text(
-            s.rateLine.format(rsRate(vehicle.rates.firstKm), rsRate(vehicle.rates.perKm), rsRate(vehicle.rates.perMin)),
+            s.rateLine.format(rsRate(vehicle.rates.firstKm), rsRate(vehicle.rates.perKm), rsRate(vehicle.rates.waitPerMin)),
             fontSize = 12.sp, color = Color.Gray, modifier = Modifier.padding(top = 4.dp),
         )
         if (vehicle.rates.minFare > 0) {
@@ -282,7 +302,7 @@ fun MeterScreen(
             colors = CardDefaults.cardColors(containerColor = Green),
         ) {
             Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(vehicle.icon, fontSize = 56.sp)
+                Text(vehicle.icon, fontSize = if (trip.running) 32.sp else 56.sp)
                 Text("${s.vehicleName(vehicle.id)} · ${s.fare}", color = Color.White, fontSize = 16.sp)
                 Text(
                     if (showTrip) rs(fare.total) else rs(0),
@@ -290,12 +310,9 @@ fun MeterScreen(
                 )
                 if (showTrip) {
                     Text(
-                        s.fareSplit.format(rs(fare.distanceFare), rs(fare.timeFare)),
+                        s.fareSplit.format(rs(fare.distanceFare), rs(fare.waitingFare)),
                         color = Color(0xFFD7F2E6), fontSize = 13.sp,
                     )
-                    if (fare.waitingFare > 0) {
-                        Text("+ ${s.waitingFareLabel} ${rs(fare.waitingFare)}", color = Color(0xFFD7F2E6), fontSize = 13.sp)
-                    }
                     if (fare.minimumTopUp > 0) {
                         Text(s.minFareLine.format(rsRate(vehicle.rates.minFare)), color = Color(0xFFD7F2E6), fontSize = 13.sp)
                     }
@@ -303,10 +320,22 @@ fun MeterScreen(
             }
         }
 
-        Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Stat(s.distance, if (showTrip) km(trip.distanceM) else "0.00 km", Modifier.weight(1f))
-            Stat(s.elapsed, clock(elapsedMs), Modifier.weight(1f))
+        // The speed beside the trip's figures, so the buttons below stay on the screen.
+        Row(
+            Modifier.fillMaxWidth().padding(top = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // Live speed, with or without a trip; it never changes the fare.
+            if (hasLocationPermission(ctx)) {
+                val speed = rememberLiveSpeed(true)
+                SpeedDial(speed, compact = true, modifier = Modifier.width(170.dp))
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Stat(s.distance, if (showTrip) km(trip.distanceM) else "0.00 km")
+                Stat(s.elapsed, clock(elapsedMs))
+                Stat(s.waitedLabel, clock(waitedMs))
+            }
         }
 
         if (trip.paused) {
@@ -317,6 +346,28 @@ fun MeterScreen(
             )
         } else if (trip.running && !trip.hasGps) {
             Text(s.gpsSearching, color = Red, modifier = Modifier.padding(top = 12.dp), textAlign = TextAlign.Center)
+        } else if (trip.running && trip.stoppedMs > 0) {
+            // One line, so the buttons below stay on the screen.
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                val freeMin = plain(trip.stopFreeMs / 60_000.0)
+                val note = when {
+                    trip.stopMarkedLight -> s.lightMarkedNote.format(clock(trip.stoppedMs))
+                    // Standing still, but not long enough yet to be waiting: the driver sees when it will be.
+                    trip.stoppedMs < trip.stopFreeMs ->
+                        (if (trip.stopAtLight) s.lightNote else s.stoppedNote).format(clock(trip.stoppedMs), freeMin)
+                    else -> ""
+                }
+                Text(
+                    note, color = if (trip.stopMarkedLight) Green else Amber, fontSize = 14.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                if (!trip.stopMarkedLight) {
+                    // A light the map does not know: the driver says so, and it is remembered for next time.
+                    OutlinedButton(onClick = { TripRepo.markStopAsLight()?.let { TrafficLights.mark(ctx, it) } }) {
+                        Text(s.markLight)
+                    }
+                }
+            }
         }
 
         if (trip.running && (trip.paused || trip.pausedTotalMs > 0)) {
@@ -334,7 +385,7 @@ fun MeterScreen(
             }
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(16.dp))
         if (!trip.running) {
             Button(
                 onClick = {
@@ -350,14 +401,22 @@ fun MeterScreen(
                 modifier = Modifier.fillMaxWidth().height(64.dp),
             ) { Text("▶  ${s.startTrip}", fontSize = 20.sp) }
         } else {
-            Button(
+            // Turned on in Settings; while away on another hire it always shows, to come back.
+            if (otherHiresButton || trip.paused) Button(
                 onClick = {
-                    val action = if (trip.paused) MeterService.ACTION_RESUME else MeterService.ACTION_PAUSE
-                    ctx.startService(Intent(ctx, MeterService::class.java).setAction(action))
+                    // Pause takes the place of Start, so a double tap or a bump on the road could pause
+                    // the meter while driving: it is asked once more. Resuming needs no question.
+                    if (trip.paused) ctx.startService(Intent(ctx, MeterService::class.java).setAction(MeterService.ACTION_RESUME))
+                    else confirmPause = true
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = if (trip.paused) Green else Amber),
                 modifier = Modifier.fillMaxWidth().height(56.dp),
-            ) { Text(if (trip.paused) "▶  ${s.resumeTrip}" else "⏸  ${s.pauseTrip}", fontSize = 18.sp) }
+            ) {
+                Text(
+                    if (trip.paused) "▶  ${s.resumeTrip}" else "🚗  ${s.pauseTrip}",
+                    fontSize = 16.sp, textAlign = TextAlign.Center,
+                )
+            }
             Spacer(Modifier.height(10.dp))
             Button(
                 onClick = { confirmEnd = true },
@@ -368,6 +427,21 @@ fun MeterScreen(
         Text(
             s.meterNote,
             fontSize = 12.sp, color = Color.Gray, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp),
+        )
+    }
+
+    if (confirmPause && trip.running && !trip.paused) {
+        AlertDialog(
+            onDismissRequest = { confirmPause = false },
+            title = { Text(s.pauseConfirmTitle) },
+            text = { Text(s.pauseConfirmText) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmPause = false
+                    ctx.startService(Intent(ctx, MeterService::class.java).setAction(MeterService.ACTION_PAUSE))
+                }) { Text(s.pauseConfirmYes, color = Amber) }
+            },
+            dismissButton = { TextButton(onClick = { confirmPause = false }) { Text(s.cancel) } },
         )
     }
 
@@ -402,21 +476,7 @@ fun MeterScreen(
                         )
                         Spacer(Modifier.height(10.dp))
                     }
-                    BillRow(s.vehicleLabel, t.vehicle)
-                    BillRow(s.date, SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(t.endedAtMs)))
-                    BillRow(s.distance, km(t.distanceM))
-                    BillRow(s.elapsed, clock(t.durationMs))
-                    if (t.pausedMs > 0) BillRow(if (t.waitingFare > 0) s.pausedCharged else s.pausedTime, clock(t.pausedMs))
-                    HorizontalDivider(Modifier.padding(vertical = 6.dp))
-                    BillRow(s.distanceFare, rs(t.distanceFare))
-                    BillRow(s.timeFare, rs(t.timeFare))
-                    if (t.waitingFare > 0) BillRow(s.waitingFareLabel, rs(t.waitingFare))
-                    if (t.minimumTopUp > 0) BillRow(s.minFareTopUp, rs(t.minimumTopUp))
-                    HorizontalDivider(Modifier.padding(vertical = 6.dp))
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(s.total, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                        Text(rs(t.total), fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Green)
-                    }
+                    TripBillRows(t)
                     googleMapsLink(route)?.let { link ->
                         TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }) {
                             Text(s.viewOnGoogle)
@@ -467,7 +527,7 @@ fun MeterScreen(
 @Composable
 private fun Stat(label: String, value: String, modifier: Modifier = Modifier) {
     Card(modifier) {
-        Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(label, fontSize = 12.sp, color = Color.Gray, textAlign = TextAlign.Center)
             Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         }
@@ -528,6 +588,25 @@ fun RatesScreen(
                 }
             }
         }
+        Card(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+            Column(Modifier.padding(12.dp)) {
+                val ctx = LocalContext.current
+                var freeStop by remember { mutableStateOf(RatesStore.freeStopMin(ctx)) }
+                var signalFree by remember { mutableStateOf(RatesStore.signalFreeMin(ctx)) }
+                Text(s.freeStopTitle, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(s.freeStopHint, fontSize = 12.sp, color = Color.Gray)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                    NumField(s.freeStopLabel, freeStop, !locked, Modifier.weight(1f)) {
+                        freeStop = it
+                        RatesStore.setFreeStopMin(ctx, it)
+                    }
+                    NumField(s.signalFreeLabel, signalFree, !locked, Modifier.weight(1f)) {
+                        signalFree = it
+                        RatesStore.setSignalFreeMin(ctx, it)
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         for (v in vehicles) {
             Card(Modifier.fillMaxWidth().padding(top = 12.dp)) {
@@ -540,16 +619,13 @@ fun RatesScreen(
                         NumField(s.nextKm, v.rates.perKm, !locked, Modifier.weight(1f)) {
                             onVehicle(v.copy(rates = v.rates.copy(perKm = it)))
                         }
-                        NumField(s.perMinLabel, v.rates.perMin, !locked, Modifier.weight(1f)) {
-                            onVehicle(v.copy(rates = v.rates.copy(perMin = it)))
+                        NumField(s.waitRateLabel, v.rates.waitPerMin, !locked, Modifier.weight(1f)) {
+                            onVehicle(v.copy(rates = v.rates.copy(waitPerMin = it)))
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
                         NumField(s.minFareLabel, v.rates.minFare, !locked, Modifier.weight(1f)) {
                             onVehicle(v.copy(rates = v.rates.copy(minFare = it)))
-                        }
-                        NumField(s.waitRateLabel, v.rates.waitPerMin, !locked, Modifier.weight(1f)) {
-                            onVehicle(v.copy(rates = v.rates.copy(waitPerMin = it)))
                         }
                     }
                 }
@@ -575,8 +651,31 @@ fun SettingsScreen() {
                 }
             }
         }
+        OtherHiresSettings()
+        BackupSettings()
         PaymentSettings()
         BatterySettings()
+    }
+}
+
+/** Turns on the button for going on Uber / PickMe hires in the middle of a hire. */
+@Composable
+private fun OtherHiresSettings() {
+    val ctx = LocalContext.current
+    val s = Tr.s
+    var on by remember { mutableStateOf(AppSettings.otherHiresButton(ctx)) }
+    Card(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(s.otherHiresTitle, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(s.otherHiresHint, fontSize = 12.sp, color = Color.Gray)
+            }
+            Switch(
+                checked = on,
+                onCheckedChange = { on = it; AppSettings.setOtherHiresButton(ctx, it) },
+                modifier = Modifier.padding(start = 8.dp),
+            )
+        }
     }
 }
 
@@ -608,7 +707,46 @@ private fun BatterySettings() {
                     modifier = Modifier.padding(top = 8.dp),
                 ) { Text(s.batteryButton) }
             }
+            if (Build.MANUFACTURER.lowercase() in listOf("xiaomi", "redmi", "poco")) {
+                // MIUI blocks a stopped app from starting its meter again unless Autostart is on.
+                Text(s.autostartHint, fontSize = 12.sp, color = Color.Gray, modifier = Modifier.padding(top = 12.dp))
+                Button(
+                    onClick = {
+                        val autostart = Intent().setClassName(
+                            "com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity",
+                        )
+                        try {
+                            ctx.startActivity(autostart)
+                        } catch (e: Exception) {
+                            ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName)))
+                        }
+                    },
+                    modifier = Modifier.padding(top = 8.dp),
+                ) { Text(s.autostartButton) }
+            }
         }
+    }
+}
+
+/** A trip's bill, line by line, for the driver: as the trip ends and again from the trip list. */
+@Composable
+private fun TripBillRows(t: Trip) {
+    val s = Tr.s
+    BillRow(s.vehicleLabel, t.vehicle)
+    BillRow(s.date, SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(t.endedAtMs)))
+    BillRow(s.distance, km(t.distanceM))
+    BillRow(s.elapsed, clock(t.durationMs))
+    if (t.pausedMs > 0) BillRow(if (t.pauseCharged) s.pausedCharged else s.pausedTime, clock(t.pausedMs))
+    if (t.waitingFare > 0) BillRow(s.waitedLabel, clock(t.waitedMs))
+    HorizontalDivider(Modifier.padding(vertical = 6.dp))
+    BillRow(s.distanceFare, rs(t.distanceFare))
+    if (t.timeFare > 0) BillRow(s.timeFare, rs(t.timeFare))
+    if (t.waitingFare > 0) BillRow(s.waitingFareLabel, rs(t.waitingFare))
+    if (t.minimumTopUp > 0) BillRow(s.minFareTopUp, rs(t.minimumTopUp))
+    HorizontalDivider(Modifier.padding(vertical = 6.dp))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(s.total, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        Text(rs(t.total), fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Green)
     }
 }
 
@@ -690,9 +828,12 @@ private fun NumField(label: String, value: Double, enabled: Boolean, modifier: M
 }
 
 @Composable
-fun HistoryScreen(history: List<Trip>, onClear: () -> Unit) {
+fun HistoryScreen(history: List<Trip>, onClear: () -> Unit, onDelete: (Trip) -> Unit) {
+    val ctx = LocalContext.current
     val s = Tr.s
     var confirmClear by remember { mutableStateOf(false) }
+    var open by remember { mutableStateOf<Trip?>(null) }
+    var confirmDelete by remember { mutableStateOf<Trip?>(null) }
     val dayFormat = remember { SimpleDateFormat("yyyy-MM-dd", Locale.US) }
     val today = dayFormat.format(Date())
     val todayTrips = history.filter { dayFormat.format(Date(it.endedAtMs)) == today }
@@ -710,10 +851,12 @@ fun HistoryScreen(history: List<Trip>, onClear: () -> Unit) {
         }
         if (history.isEmpty()) {
             Text(s.noTrips, color = Color.Gray, modifier = Modifier.padding(top = 16.dp))
+        } else {
+            Text(s.tripsKeptNote.format(KEEP_TRIP_DAYS), fontSize = 12.sp, color = Color.Gray, modifier = Modifier.padding(bottom = 4.dp))
         }
         LazyColumn(Modifier.weight(1f)) {
             items(history) { t ->
-                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { open = t }) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(
@@ -723,6 +866,7 @@ fun HistoryScreen(history: List<Trip>, onClear: () -> Unit) {
                             Text("${km(t.distanceM)} · ${clock(t.durationMs)}")
                         }
                         Text(rs(t.total), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Text("  ›", fontSize = 20.sp, color = Color.Gray)
                     }
                 }
             }
@@ -730,6 +874,38 @@ fun HistoryScreen(history: List<Trip>, onClear: () -> Unit) {
         if (history.isNotEmpty()) {
             TextButton(onClick = { confirmClear = true }) { Text(s.clearTrips, color = Red) }
         }
+    }
+    open?.let { t ->
+        AlertDialog(
+            onDismissRequest = { open = null },
+            title = { Text("🚕 ${s.billTitle}") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    TripBillRows(t)
+                    googleMapsLink(t.route)?.let { link ->
+                        TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }) {
+                            Text(s.viewOnGoogle)
+                        }
+                    }
+                    TextButton(onClick = { confirmDelete = t }) { Text("🗑  ${s.deleteTrip}", color = Red) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { open = null }) { Text(s.ok) } },
+            dismissButton = {
+                TextButton(onClick = { shareBill(ctx, t, null, t.route) }) { Text("PDF / WhatsApp") }
+            },
+        )
+    }
+    confirmDelete?.let { t ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text(s.deleteTripTitle) },
+            text = { Text(s.clearConfirmText) },
+            confirmButton = {
+                TextButton(onClick = { confirmDelete = null; open = null; onDelete(t) }) { Text(s.delete, color = Red) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text(s.cancel) } },
+        )
     }
     if (confirmClear) {
         AlertDialog(

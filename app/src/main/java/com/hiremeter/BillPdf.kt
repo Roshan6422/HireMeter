@@ -66,11 +66,11 @@ fun writeBillPdf(ctx: Context, t: Trip, map: Bitmap?, route: List<LatLon>): File
     row(s.date, SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(t.endedAtMs)))
     row(s.distance, km(t.distanceM))
     row(s.elapsed, clock(t.durationMs))
-    // The customer's copy never mentions pausing; charged waiting shows as plain waiting time.
-    if (t.waitingFare > 0) row(s.waitedLabel, clock(t.pausedMs))
+    // The customer's copy never mentions pausing; charged pause time is part of the waiting time.
+    if (t.waitingFare > 0) row(s.waitedLabel, clock(t.waitedMs))
     line()
     row(s.distanceFare, rs(t.distanceFare))
-    row(s.timeFare, rs(t.timeFare))
+    if (t.timeFare > 0) row(s.timeFare, rs(t.timeFare))
     if (t.waitingFare > 0) row(s.waitingFareLabel, rs(t.waitingFare))
     if (t.minimumTopUp > 0) row(s.minFareTopUp, rs(t.minimumTopUp))
     line()

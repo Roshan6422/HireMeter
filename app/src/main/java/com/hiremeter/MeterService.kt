@@ -26,6 +26,7 @@ class MeterService : Service(), LocationListener {
     override fun onCreate() {
         super.onCreate()
         TripRepo.init(this)
+        TrafficLights.load(this)
     }
 
     @SuppressLint("MissingPermission") // MainActivity only starts the service after the permission is granted
@@ -46,7 +47,7 @@ class MeterService : Service(), LocationListener {
             }
             ACTION_START -> {
                 if (!goForeground(paused = false)) return START_NOT_STICKY
-                TripRepo.start(System.currentTimeMillis())
+                TripRepo.start(System.currentTimeMillis(), RatesStore.freeStopMs(this), RatesStore.signalFreeMs(this))
                 listen(lm)
             }
             else -> {

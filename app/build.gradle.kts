@@ -20,8 +20,9 @@ android {
         applicationId = "com.hiremeter"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = 5
+        versionName = "1.4"
+        manifestPlaceholders["appLabel"] = "HireMeter"
     }
 
     signingConfigs {
@@ -38,6 +39,12 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.findByName("release")
+        }
+        // A separate app next to the installed release one, so trying a build never touches the
+        // trips and rates saved in the real app.
+        debug {
+            applicationIdSuffix = ".debug"
+            manifestPlaceholders["appLabel"] = "HireMeter debug"
         }
     }
 
